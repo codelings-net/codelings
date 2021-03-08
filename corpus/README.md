@@ -1,5 +1,5 @@
-The 100 MB Wikipedia corpus `cdl_enwik8.zip` in this directory is described on 
-Matt Mahoney's page
+The 100 MB Wikipedia corpus `cdl_enwik8.gz` in this directory (74 MB after 
+processing, 28 MB compressed) is described on Matt Mahoney's page
 
 http://mattmahoney.net/dc/textdata
 

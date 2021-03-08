@@ -9,6 +9,8 @@
 # Written by Matt Mahoney, June 10, 2006.  This program is released to the public domain.
 
 # Minor changes by the Codelings project, 2021-03-08
+# Keep uppercase letters and digits, remove initial spaces and multiple new
+# lines
 
 $/=">";                     # input record separator
 while (<>) {
