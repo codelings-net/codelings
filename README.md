@@ -78,7 +78,7 @@ WebAssembly binary file that defines the following environment: **TODO**
 
 ## Useful links
 
-#### WebAssembly
+### WebAssembly
 
 Codelings are built out of WebAssembly instructions and so a passing 
 familiarity with the basics is probably a good idea if you want to 
@@ -92,12 +92,12 @@ understand what's going on.
 https://webassembly.github.io/spec/core/appendix/index-instructions.html
 
 
-#### WABT
+### WABT
 
 **TODO**
 
 
-#### Wasmtime-py
+### Wasmtime-py
 
 Wasmtime is a stand-alone WebAssembly runtime that allows WebAssembly programs 
 to be run outside of the browser. This project uses the Python bindings.
