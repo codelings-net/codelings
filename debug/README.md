@@ -1,7 +1,7 @@
 ## Instructions for running the WebAssembly debugger
 
-For Codelings this is really useful way of gaining a better understanding about 
-what the code is doing.
+For Codelings this is a good way of gaining a better understanding of what the 
+code is doing.
 
 The best tool right now (March 2021) is Chrome because it shows the WebAssembly 
 values stack and, if you have access to version 89+, it also has a Memory 
@@ -10,12 +10,12 @@ Inspector.
 If you follow the instructions in this file, you should be able achieve 
 something close to what's shown in the following screenshots:
 
-![Chrome](chrome-screenshot.png)
+[Chrome](chrome-screenshot.png)
 
-![Firefox](firefox-screenshot.png)
+[Firefox](firefox-screenshot.png)
 
 
-###Symlink the `wasm` file you want debug to `debug/debug.wasm`
+### Symlink the `wasm` file you want debug to `debug/debug.wasm`
 
 If you do not have a `wasm` file you would like to debug, you can skip this 
 step and use the sample `debug.wasm` file.
@@ -28,14 +28,14 @@ mv debug.wasm debug.wasm.bak
 ln -s path/to/you/file.wasm debug.wasm
 ```
 
-####Start the HTTP server
+#### Start the HTTP server
 
 ```bash
 cd debug
 $ ./http_server.py
 ```
 
-####Start the debugger
+#### Start the debugger
 
 Go to the following URL:
 
@@ -66,7 +66,7 @@ the 16 local variables, most of them zero. In Chrome, you should also be able
 to see the WebAssembly value stack. 
 
 
-####Add the watch expression
+#### Add the watch expression
 
 The expression dumps a few key stretches of WebAssembly memory. If you feel 
 like customising the JavaScript code for `dump()`, it's in `debug.html`.
@@ -79,7 +79,7 @@ dump($m)       // Firefox
 ```
 
 
-####Launch the Memory Inspector
+#### Launch the Memory Inspector
 
 The following only works in Chrome (sadly no Firefox equivalent) and only in 
 version 89+, which as of March 2021 was only available from the developer beta 

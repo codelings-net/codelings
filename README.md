@@ -1,6 +1,5 @@
 # Codelings
-
-"Digital organisms made out of computer code that live in the browser" ... well, eventually!
+"Digital organisms made out of computer code that live in the browser"
 
 
 ## Introduction
@@ -45,9 +44,7 @@ syntax make it significantly more brittle than typical assembly languages.
 
 In order to keep the problem as simple as possible during early stages of the 
 project, strings of WebAssembly code are embedded within an existing 
-WebAssembly binary file that defines the following environment:
-
-
+WebAssembly binary file that defines the following environment: **TODO***
 
 
 #### Random sequences
@@ -81,8 +78,8 @@ WebAssembly binary file that defines the following environment:
 #### WebAssembly
 
 Codelings are built out of WebAssembly instructions and so a passing 
-familiarity with the basics is probably required for understanding what's going 
-on, especially at this early stage.
+familiarity with the basics is probably a good idea if you want to 
+understand what's going on.
 
 - Gentle intro: https://blog.scottlogic.com/2018/04/26/webassembly-by-hand.html
 
