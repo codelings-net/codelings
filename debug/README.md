@@ -1,7 +1,7 @@
 ## Instructions for debugging WebAssembly
 
-For Codelings stepping through the code is an excellent way of gaining a better 
-understanding of what it is doing.
+Stepping through the code is an excellent way of gaining a better understanding 
+of what the codelings are doing.
 
 The best tool right now (March 2021) is Chrome because it shows the WebAssembly 
 values stack and, if you have access to version 89+, it also has a Memory 
@@ -47,11 +47,11 @@ http://localhost:4096/debug.html
 
 Open developer tools:
 
-- In the desktop version of Chrome, this is **Ctrl+Shift+I** or Menu (three 
-vertical dots in the top right corner) > More Tools > Developer tools.
+- In the desktop version of Chrome, the shortcut is **Ctrl+Shift+I** or Menu 
+(three vertical dots in the top right corner) > More Tools > Developer tools.
 
-- In the desktop version of Firefox, this is **Ctrl+Shift+Z** or Menu (three 
-dashes in the top right corner) > Web developer > Debugger.
+- In the desktop version of Firefox, the shortcut is **Ctrl+Shift+Z** or Menu 
+(three dashes in the top right corner) > Web developer > Debugger.
 
 Hard-reload the page (left-click on the Reload button while holding `Shift`).
 
@@ -66,15 +66,15 @@ Hard-reload the page.
 The debugger should now be paused on the breakpoint and you can step through 
 the program by pressing F11. You should be able to see the current values of 
 the 16 local variables, most of them zero. In Chrome, you should also be able 
-to see the WebAssembly value stack.
+to see the WebAssembly values stack.
 
 
 ### Add the watch expression
 
-The expression dumps a few key stretches of WebAssembly memory. If you feel 
-like customising the JavaScript code for `dump()`, it's in `debug.html`.
+The watch expression dumps a few key regions of WebAssembly memory. If you feel 
+like customising the JavaScript code for `dump()`, it is in `debug.html`.
 
-The watch expressions to use are as follows:
+The expressions to use are as follows:
 
 ```javascript
 dump(memory0)  // Google Chrome
@@ -86,9 +86,15 @@ dump($m)       // Firefox
 
 The following only works in Chrome (sadly no Firefox equivalent) and only in 
 version 89+, which as of March 2021 was only available from the developer beta 
-channel (which is publicly accessible without the need for any sign-ups) -
+channel (which is publicly accessible without the need for any sign-ups).
 
-Enable WebAssembly debugging via DevConsole > Settings (cogged wheel) > 
-Experiments => (tick) WebAssembly Debugging: ...,
+The first step is to enable WebAssembly debugging via:
 
-and then right-click on Module > $m Memory(1) > Inspect memory
+DevConsole > Settings (cogged wheel, top right) > Experiments => (tick) 
+WebAssembly Debugging: ...
+
+and then right-click on:
+
+DevConsole > Scope (in the right pane) > Module > memories > $m Memory(1)
+
+and choose 'Inspect memory'.
