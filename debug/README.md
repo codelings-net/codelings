@@ -1,7 +1,7 @@
-## Instructions for running the WebAssembly debugger
+## Instructions for debugging WebAssembly
 
-For Codelings this is a good way of gaining a better understanding of what the 
-code is doing.
+For Codelings stepping through the code is an excellent way of gaining a better 
+understanding of what it is doing.
 
 The best tool right now (March 2021) is Chrome because it shows the WebAssembly 
 values stack and, if you have access to version 89+, it also has a Memory 
@@ -24,7 +24,7 @@ Firefox:
 If you do not have a `wasm` file you would like to debug, you can skip this 
 step and use the sample `debug.wasm` file.
 
-If you have `wasm` file you want to debug:
+If you have a `wasm` file you want to debug:
 
 ```bash
 cd debug
@@ -63,10 +63,10 @@ left.
 
 Hard-reload the page.
 
-The debugger should now be paused on the breakpoint and you can press F11 to 
-step through the program. In Firefox you should be able to see the current 
-value of the 16 local variables, most of them zero. In Chrome, you should also 
-be able to see the WebAssembly value stack. 
+The debugger should now be paused on the breakpoint and you can step through 
+the program by pressing F11. You should be able to see the current values of 
+the 16 local variables, most of them zero. In Chrome, you should also be able 
+to see the WebAssembly value stack.
 
 
 ### Add the watch expression

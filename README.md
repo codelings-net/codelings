@@ -44,7 +44,7 @@ syntax make it significantly more brittle than typical assembly languages.
 
 In order to keep the problem as simple as possible during early stages of the 
 project, strings of WebAssembly code are embedded within an existing 
-WebAssembly binary file that defines the following environment: **TODO***
+WebAssembly binary file that defines the following environment: **TODO**
 
 
 #### Random sequences
