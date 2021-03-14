@@ -1,24 +1,56 @@
 # Codelings
-*Digital organisms made out of computer code that live in the browser*
+
+"Digital organisms made out of computer code that live in the browser" ... well, eventually!
 
 
 ## Introduction
 
-One of the goals of this project is to evolve digital organisms called *codelings* that will "live" in the browser and interact with users, similar to the [Tamagotchi](https://en.wikipedia.org/wiki/Tamagotchi) "digital pets" of the late 1990s but with one key difference: unlike the Tamagotchis, and like biological organisms, codelings will be capable of evolving new features. In fact a key principle of the project is that every aspect of the organism can be mutated and evolved. If a user finds an interesting new mutation, they will be able to share it with others in the community. The hope is that as these mutations accumulate over time, we will see the emergence of complex digital creatures, including some that might be able to recognise human faces, respond to simple voice commands, compose music etc.
+The goal of this project is to evolve digital organisms (called *codelings*) 
+that will "live" in the browser and interact with users a bit like the 
+[Tamagotchi](https://en.wikipedia.org/wiki/Tamagotchi) "digital pets" of the 
+late 1990s - but with one key difference: unlike the Tamagotchis, and very much 
+like biological organisms, codelings will be capable of evolving new features. 
+In fact a key principle of the project is that every aspect of the organism can 
+be mutated and evolved. If a user finds an interesting new mutation, they will 
+be able to share it with others in the community. The hope is that as these 
+mutations accumulate over time, we will see the emergence of complex digital 
+creatures including some that might be able to recognise human faces, respond 
+to simple voice commands etc.
 
-Evolution of computer code is a difficult open problem because code is exceedingly brittle: most random changes result in syntax errors that completely break the program, and the few changes that are syntactically correct often end up breaking the program in other ways.
+The approach taken by this project is to start from scratch, i.e. from short 
+strings of random bytes, and then attempt to engineer a positive feedback loop 
+where a 'smart' mutator that has a better understanding of code than its 
+ancestors is able to successfully evolve longer and more complex programs, 
+including an improved version of itself, and so on until the 
+[singularity](https://en.wikipedia.org/wiki/Technological_singularity).
 
-The approach taken by this project is to start from scratch, i.e. from short strings of random bytes, and then attempt to engineer a positive feedback loop where a 'smart' mutator that has a better understanding of code than its ancestors is able to successfully evolve longer and more complex programs, including an improved version of itself, at which point the cycle repeats itself.
+Evolving the initial smart mutator by having humans examining millions of 
+random programs one by one is clearly impractical, so instead the approach 
+during early stages of the project will be to score programs on how well they 
+can predict the next character in Wikipedia articles, and mutators will then 
+compete on how well their mutations improve performance on this benchmark.
 
-Evolving the initial smart mutator by having humans examine millions of random programs one-by-one is clearly impractical. Instead the approach during early stages of the project will be to score programs on how well they can predict the next character in Wikipedia articles, and mutators will then compete on how well their mutations improve performance on this benchmark.
+The programming language chosen for the project is 
+[WebAssembly](https://webassembly.org/), because it is relatively simple, fast, 
+cross-platform and available in all [major 
+browsers](https://webassembly.org/roadmap/) without the user having to install 
+any additional software. It is also a state-of-the-art sandbox for running 
+untrusted code. The downside is that the type system and the control flow 
+syntax make it significantly more brittle than typical assembly languages.
 
-The programming language chosen for the project is [WebAssembly](https://webassembly.org/), because it is simple, fast, cross-platform and available in all [major browsers](https://webassembly.org/roadmap/) without the user having to install any additional software. It is also a state-of-the-art sandbox for running untrusted code. The downside is that the type system and the control flow syntax make it significantly more brittle than typical assembly languages.
+
+## Progress to date
+
+#### Interface to WebAssembly
+
+In order to keep the problem as simple as possible during early stages of the 
+project, strings of WebAssembly code are embedded within an existing 
+WebAssembly binary file that defines the following environment:
 
 
 
-## Current status
 
-Compared to the lofty goals outlined above, progress to date has been rather slow. Compare
+#### Random sequences
 
 **TODO**
 
@@ -41,33 +73,34 @@ Compared to the lofty goals outlined above, progress to date has been rather slo
 |   15   |  0.4e2 |   1.0e6  |     0.004%   |
 |   16   |  0.2e2 |   1.0e6  |     0.002%   |
 
-**TODO**
+####
 
 
 ## Useful links
 
-### Introduction to WebAssembly
+#### WebAssembly
 
-This is probably my favourite introductory text:
+Codelings are built out of WebAssembly instructions and so a passing 
+familiarity with the basics is probably required for understanding what's going 
+on, especially at this early stage.
 
-* https://blog.scottlogic.com/2018/04/26/webassembly-by-hand.html
+- Gentle intro: https://blog.scottlogic.com/2018/04/26/webassembly-by-hand.html
+
+- The spec: https://webassembly.github.io/spec/core/
+
+- Index of instructions: 
+https://webassembly.github.io/spec/core/appendix/index-instructions.html
 
 
-### Index of WebAssembly instructions
-
-Codelings are built out of WebAssembly instructions and this page lists them all:
-
-* https://webassembly.github.io/spec/core/appendix/index-instructions.html
-
-
-### WABT
+#### WABT
 
 **TODO**
 
 
-### Wasmtime-py
+#### Wasmtime-py
 
-Wasmtime is a stand-alone WebAssembly runtime that allows WebAssembly programs to be run outside of the browser. This project uses the Python bindings.
+Wasmtime is a stand-alone WebAssembly runtime that allows WebAssembly programs 
+to be run outside of the browser. This project uses the Python bindings.
 
 - Source: https://github.com/bytecodealliance/wasmtime-py
 
