@@ -47,10 +47,10 @@ http://localhost:4096/debug.html
 
 Open developer tools:
 
-- In the desktop version of Chrome, this is <b>Ctrl+Shift+I</b> or Menu (three 
+- In the desktop version of Chrome, this is **Ctrl+Shift+I** or Menu (three 
 vertical dots in the top right corner) > More Tools > Developer tools.
 
-- In the desktop version of Firefox, this is <b>Ctrl+Shift+Z</b> or Menu (three 
+- In the desktop version of Firefox, this is **Ctrl+Shift+Z** or Menu (three 
 dashes in the top right corner) > Web developer > Debugger.
 
 Hard-reload the page (left-click on the Reload button while holding `Shift`).
