@@ -1,4 +1,4 @@
 [Aa]ctivate*
-venv
+.env
 corpus/cdl_enwik8
 corpus/enwik8.zip
