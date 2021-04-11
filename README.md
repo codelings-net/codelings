@@ -1,79 +1,89 @@
 # Codelings
 "Digital organisms made out of computer code that live in the browser"
 
+<Mick's blurb>
 
-## Introduction
-
-The goal of this project is to evolve digital organisms (called *codelings*) 
-that will "live" in the browser and interact with users a bit like the 
-[Tamagotchi](https://en.wikipedia.org/wiki/Tamagotchi) "digital pets" of the 
-late 1990s - but with one key difference: unlike the Tamagotchis, and very much 
-like biological organisms, codelings will be capable of evolving new features. 
-In fact a key principle of the project is that every aspect of the organism can 
-be mutated and evolved. If a user finds an interesting new mutation, they will 
-be able to share it with others in the community. The hope is that as these 
-mutations accumulate over time, we will see the emergence of complex digital 
-creatures including some that might be able to recognise human faces, respond 
-to simple voice commands etc.
-
-The approach taken by this project is to start from scratch, i.e. from short 
-strings of random bytes, and then attempt to engineer a positive feedback loop 
-where a 'smart' mutator that has a better understanding of code than its 
-ancestors is able to successfully evolve longer and more complex programs, 
-including an improved version of itself, and so on until the 
-[singularity](https://en.wikipedia.org/wiki/Technological_singularity).
-
-Evolving the initial smart mutator by having humans examining millions of 
-random programs one by one is clearly impractical, so instead the approach 
-during early stages of the project will be to score programs on how well they 
-can predict the next character in Wikipedia articles, and mutators will then 
-compete on how well their mutations improve performance on this benchmark.
-
-The programming language chosen for the project is 
-[WebAssembly](https://webassembly.org/), because it is relatively simple, fast, 
-cross-platform and available in all [major 
-browsers](https://webassembly.org/roadmap/) without the user having to install 
-any additional software. It is also a state-of-the-art sandbox for running 
-untrusted code. The downside is that the type system and the control flow 
-syntax make it significantly more brittle than typical assembly languages.
+**TODO** Pointers to about.md, progress_so_far.md and debug/debug.md
 
 
-## Progress to date
+## Installation
 
-### Interface to WebAssembly
+### Prerequisites
 
-In order to keep the problem as simple as possible during early stages of the 
-project, strings of WebAssembly code are embedded within an existing 
-WebAssembly binary file that defines the following environment: **TODO**
+The main script, `evolver.py`, has been developed using **Python 3.8**. It 
+definitely needs at least version 3.6 (which introduced f-strings; 3.6 or above 
+is also required by the `wasmtime` module), but has not been tested with Python 
+3.6 or 3.7 (test reports welcome).
 
+The virtual environment module (venv) is recommended, which sometimes comes as 
+a separate package under Linux (e.g. `python3.8-venv`).
 
-### Random sequences
+### Setting up a Python virtual environment
 
-**TODO**
+Linux:
 
-|n_bytes | passed | attempts | success rate |
-|:------:|-------:|---------:|:------------:|
-|    1   |    128 |     256  |    50%       |
-|    2   |  1.9e4 |   6.6e4  |    29%       |
-|    3   |  1.4e5 |   1.0e6  |    14%       |
-|    4   |  7.7e4 |   1.0e6  |     7.7%     |
-|    5   |  1.2e4 |   1.0e6  |     1.2%     |
-|    6   |  4.4e3 |   1.0e6  |     0.44%    |
-|    7   |  2.2e3 |   1.0e6  |     0.22%    |
-|    8   |  1.1e3 |   1.0e6  |     0.11%    |
-|    9   |  5.6e2 |   1.0e6  |     0.056%   |
-|   10   |  2.0e3 |   1.0e6  |     0.20%    |
-|   11   |  1.3e3 |   1.0e6  |     0.13%    |
-|   12   |  7.3e2 |   1.0e6  |     0.073%   |
-|   13   |  3.7e2 |   1.0e6  |     0.037%   |
-|   14   |  1.0e2 |   1.0e6  |     0.010%   |
-|   15   |  0.4e2 |   1.0e6  |     0.004%   |
-|   16   |  0.2e2 |   1.0e6  |     0.002%   |
+```bash
+git clone https://github.com/codelings-net/codelings
+cd codelings
+python3.8 -m venv .env
+ln -s .env/bin/activate .
+source activate
+pip install --upgrade pip
+pip install wasmtime hexdump
+```
 
+Windows: **TODO**
 
-### Reduced Instruction Set
+Note: This should install the most recent version of the `wasmtime` WebAssembly 
+runtime. For the sake of completeness, the project has been developed using 
+`wasmtime` version 0.25.0 and needs the fuel feature (which limits the number 
+of instructions executed and thereby avoids infinite loops). Fuel was 
+introduced in version 0.23.0 released in Feb 2021 and earlier versions will not 
+work.
+
+### Installing WABT
+
+WABT (The WebAssembly Binary Toolkit, affectionately known as "wabbit") is not 
+required to run the main script, `evolver.py`, but it is useful for converting 
+hand-written WebAssembly text format files to binary and for disassembling the 
+binary file format used by the main script.
 
 **TODO**
+
+
+## Usage
+
+```bash
+cd codelings
+source activate
+
+# print out a detailed helper message
+./evolver.py -h
+
+# print out a list of available scoring functions and their descriptions
+./evolver.py -fn list
+
+# generate 10 new generation 0 codelings of default length and print out
+# their scores
+./evolver.py -gen0 10 run01
+
+# generate 10 strings of random bytes of length 5, score them with
+# scoring function 'v02', print out their scores and save those with 
+# score >= 0x00 to 'out'
+./evolver.py -rnd0 10 -length 5 -fn v02 -thresh 0x00 run02
+```
+
+The default input directory is called `alive` and is assumed to contain 
+codelings that are worth evolving further. The default output directory is 
+`out`.
+
+Most of the command-line options (including `indir` and `outdir`) can also be 
+set in `Config.py`.
+
+The script catches SIGINT and handles it gracefully, so if you want to end a 
+run that's in progress, feel free to press Ctrl-C at any point. The script will 
+finish jobs that have already started and then exit (usually within a few 
+seconds).
 
 
 ## Useful links
@@ -81,16 +91,31 @@ WebAssembly binary file that defines the following environment: **TODO**
 ### WebAssembly
 
 Codelings are built out of WebAssembly instructions and so a passing 
-familiarity with the basics is probably a good idea if you want to 
-understand what's going on.
+familiarity with the basics is probably a good idea if you want to understand 
+what's going on.
 
 - Gentle intro: https://blog.scottlogic.com/2018/04/26/webassembly-by-hand.html
 
-- The spec: https://webassembly.github.io/spec/core/
+- The spec (1.1 draft): https://webassembly.github.io/spec/core/
 
-- Index of instructions: 
+- The spec (1.0, W3C): https://www.w3.org/TR/wasm-core-1/
+
+- Index of instructions (1.1 draft): 
 https://webassembly.github.io/spec/core/appendix/index-instructions.html
 
+- Index of instructions (1.0, W3C):
+https://www.w3.org/TR/wasm-core-1/#a7-index-of-instructions
+
+- Main changes from 1.0 (aka the Minimum Viable Product or 'MVP') to 1.1:
+https://github.com/WebAssembly/spec/tree/master/proposals
+
+- Browser support for new features: https://webassembly.org/roadmap/
+
+This project currently assumes version 1.0. The goal is for all code to be 
+executable in all 3 major browsers (Chrome, Firefox and Safari) with default 
+settings. As of March 2021, this means that we can start using the multi-value 
+feature from the 1.1 spec (functions being able to return multiple values; very 
+useful) as well as import/export of mutable globals (less useful?).
 
 ### WABT
 
