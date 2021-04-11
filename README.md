@@ -10,17 +10,19 @@
 
 ### Prerequisites
 
-The main script, [evolver.py], has been developed using **Python 3.8**. It 
+* **Python** - The main script ([`evolver.py`]) has been developed using Python 3.8. It 
 definitely needs at least version 3.6 (which introduced f-strings; 3.6 or above 
-is also required by the `wasmtime` module), but has not been tested with Python 
+is also required by the `wasmtime` module, which will be installed below). The script has not been tested with Python 
 3.6 or 3.7 (test reports welcome).
 
-The Python virtual environment module (`venv`) is recommended, which sometimes comes as 
-a separate package under Linux (e.g. `python3.8-venv`), plus obviously `git`.
+* **The Python virtual environment module (`venv`)** - Recommended but not necessary (if not using `venv`, simply skip any lines that have "env" or "activate" in them). The `venv` module sometimes comes as 
+a separate package under Linux (e.g. `python3.8-venv`).
+
+* **Git**
 
 ### Setting up a Python virtual environment
 
-The following has been tested on Linux (bash) and git-bash under Windows 10:
+The following has been tested on Linux (bash) and Windows 10 (git-bash):
 
 ```bash
 git clone https://github.com/codelings-net/codelings
@@ -30,20 +32,20 @@ python -m venv .env
 # Linux bash
 ln -s .env/bin/activate .
 
-# git-bash
+# Win10 git-bash
 ln -s .env/Scripts/activate .
 
 source activate
 pip install wasmtime hexdump
 ```
 
-No idea about PowerShell or macOS (reports welcome).
+(Reports from macOS and Windows PowerShell users would be welcome.)
 
-This should install the most recent version of the `wasmtime` WebAssembly 
+The above should install the most recent version of the `wasmtime` WebAssembly 
 runtime. The project has been developed using 
 `wasmtime` version 0.25.0 and needs the fuel feature (which limits the number 
 of instructions executed and thereby avoids infinite loops). Fuel was 
-introduced in version 0.23.0 released in Feb 2021, earlier versions will not 
+introduced in version 0.23.0 released in Feb 2021, so earlier versions will not 
 work.
 
 ### Installing WABT
@@ -83,7 +85,7 @@ codelings that are worth evolving further. The default output directory is
 `out`.
 
 Most of the command-line options (including `-indir` and `-outdir`) can also be 
-set in `Config.py`.
+set in [`config.py`].
 
 The script catches SIGINT and handles it gracefully, so if you want to end a 
 run that's in progress, feel free to press Ctrl-C at any point. The script will 
@@ -140,4 +142,5 @@ to be run outside of the browser. This project uses the Python bindings.
 
 
 
-[evolver.py]: evolver.py
+[`config.py`]: config.py
+[`evolver.py`]: evolver.py
