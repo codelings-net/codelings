@@ -906,7 +906,7 @@ def SIGINT_handler(sig, frame):
 def main():
 	"""Generate, mutate and score codelings"""
 	
-	cfg = config.config()
+	cfg = config.Config()
 	cmd = sys.argv[0]
 	epilogue = f"""\
 		Most of the options can also be set in `config.py`.
