@@ -37,7 +37,7 @@ source activate
 pip install wasmtime hexdump
 ```
 
-No idea about PowerShell or Mac OS X (reports welcome).
+No idea about PowerShell or macOS (reports welcome).
 
 This should install the most recent version of the `wasmtime` WebAssembly 
 runtime. The project has been developed using 
