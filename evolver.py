@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from Config import Config as cfg
+import config
 
 from hexdump import hexdump
 from wasmtime import Config, Engine, Store, Module, Instance, Memory, Func, \
@@ -444,7 +444,7 @@ class Code:
 
 
 class Codeling:
-	def __init__(self, json_fname:str=None, wasm_fname:str=None, 
+	def __init__(self, cfg:'Config', json_fname:str=None, wasm_fname:str=None, 
 			json:dict=None, gen0=None, deferred=False):
 		"""
 		Deferred Initialisation
@@ -462,6 +462,8 @@ class Codeling:
 			return
 		else:
 			self._deferred = None
+		
+		self.cfg = cfg
 		
 		# NB read_wasm() is an important part of scoring (validation step)
 		# and takes place at that point
@@ -536,7 +538,7 @@ class Codeling:
 		if os.path.exists(fname):
 			return fname
 		
-		with open(cfg.template, "rb") as f:
+		with open(self.cfg.template, "rb") as f:
 			template = f.read()
 		
 		"""
@@ -624,7 +626,7 @@ class Codeling:
 			'code': code.b.hex(),
 			'created': nice_now_UTC(),
 			'parents': [],
-			'created_by': cfg.this_script_release + ' Codeling.gen0()' }
+			'created_by': self.cfg.this_script_release + ' Codeling.gen0()' }
 	
 	def concat(self, cdl:'Codeling', child_ID:str) -> 'Codeling':
 		child = { 
@@ -632,7 +634,7 @@ class Codeling:
 			'code': re.sub('0b$', '', self.json['code']) + cdl.json['code'],
 			'created': nice_now_UTC(),
 			'parents': [ self.json['ID'], cdl.json['ID'] ],
-			'created_by': cfg.this_script_release + ' Codeling.concat()' }
+			'created_by': self.cfg.this_script_release + ' Codeling.concat()' }
 		
 		return Codeling(json=child)
 	
@@ -732,7 +734,7 @@ class Codeling:
 		
 		wasm_fname = self._init_wasm_fname
 		if wasm_fname is None:
-			wasm_fname = self.write_wasm(cfg.tmpdir)
+			wasm_fname = self.write_wasm(self.cfg.tmpdir)
 			tmp_wasm = True
 		else:
 			tmp_wasm = False
@@ -749,24 +751,24 @@ class Codeling:
 		else:
 			# scoring (includes running)
 			t_score = time.time()
-			score_fn = getattr(self, 'score_' + cfg.fn)  # one of score_vXX()
+			score_fn = getattr(self, 'score_' + self.cfg.fn)
 			self.set_rnd()
 			self.set_inp( self.b() )
 			res = score_fn()
 		
-		if cfg.thresh is not None and res.score >= cfg.thresh:
+		if self.cfg.thresh is not None and res.score >= self.cfg.thresh:
 			res.status = 'accept'
 			
 			if tmp_wasm:
 				# NB cannot link because /tmp could be on a different device
-				shutil.move(self._wasm_fname, cfg.outdir)
+				shutil.move(self._wasm_fname, self.cfg.outdir)
 			else:
-				link2dir(self._wasm_fname, cfg.outdir)
+				link2dir(self._wasm_fname, self.cfg.outdir)
 			
 			if self._json_fname is None:
-				self.write_json(cfg.outdir)
+				self.write_json(self.cfg.outdir)
 			else:
-				link2dir(self._json_fname, cfg.outdir)
+				link2dir(self._json_fname, self.cfg.outdir)
 		else:
 			res.status = 'reject'
 			
@@ -781,7 +783,7 @@ class Codeling:
 def score_Codeling(cdl:'Codeling'):
 	return cdl.score()
 
-def score_Codelings(cdl_gtor) -> None:
+def score_Codelings(cfg:'Config', cdl_gtor) -> None:
 	IDlen = len(cfg.runid)+13 if cfg.runid is not None else 20
 	times = 't_gen t_valid t_run t_score'.split()
 	t_start = time.time()
@@ -802,7 +804,7 @@ def score_Codelings(cdl_gtor) -> None:
 		# `.imap` because `.map` converts the iterable to a list
 		# `_unordered` because don't care about order, really
 		# *** when debugging use `map` instead for cleaner error messages ***
-		# for r in map(score_Codeling, cdl_gtor()):
+		#for r in map(score_Codeling, cdl_gtor()):
 		for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
 			n_scored += 1
 			if r.status == 'accept':
@@ -830,17 +832,17 @@ def score_Codelings(cdl_gtor) -> None:
 	print( f"# Throughput: {n_scored/(time.time()-t_start)*3600:.2e} " 
 		f"scored/hour" )
 
-def gtor_alive() -> 'Codeling':
+def gtor_alive(cfg:'Config') -> 'Codeling':
 	for json_fname in all_json_fnames(cfg.indir):
 		if STOPPING:
 			print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
 				file=sys.stderr)
 			break
 		
-		yield Codeling( json_fname=json_fname, wasm_fname=json2wasm(json_fname),
-			deferred=True )
+		yield Codeling( cfg, json_fname=json_fname, 
+			wasm_fname=json2wasm(json_fname), deferred=True )
 
-def gtor_gen0(N:int) -> 'Codeling':
+def gtor_gen0(cfg:'Config', N:int) -> 'Codeling':
 	for i in range(N):
 		if STOPPING:
 			print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
@@ -848,10 +850,10 @@ def gtor_gen0(N:int) -> 'Codeling':
 			break
 		
 		ID = f"{cfg.runid}-{i:012}"
-		yield Codeling(gen0=(ID, cfg.length), deferred=True)
+		yield Codeling(cfg, gen0=(ID, cfg.length), deferred=True)
 
 # TODO XXX uses LastID, needs a rewrite
-def gtor_concat(gen: int) -> 'Codeling':
+def gtor_concat(cfg:'Config', gen: int) -> 'Codeling':
 	IDs = LastID(write_at_exit=False)
 	alive = all_alive_json()
 	for fn1 in alive:
@@ -904,9 +906,10 @@ def SIGINT_handler(sig, frame):
 def main():
 	"""Generate, mutate and score codelings"""
 	
+	cfg = config.config()
 	cmd = sys.argv[0]
 	epilogue = f"""\
-		Most of the options can also be set in `Config.py`.
+		Most of the options can also be set in `config.py`.
 		
 		Examples:
 		  # print out a list of scoring functions and their descriptions
@@ -1065,20 +1068,20 @@ def main():
 	gtor = None
 	
 	if args.alive:
-		gtor = gtor_alive
+		gtor = lambda: gtor_alive(cfg)
 	elif args.rnd0 is not None:
 		gtor = None
 		sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
 	elif args.gen0 is not None:
-		gtor = lambda: gtor_gen0(args.gen0)
+		gtor = lambda: gtor_gen0(cfg, args.gen0)
 	elif args.mutate is not None:
 		gtor = None
 		sys.exit("SORRY, -mutate not implemented yet :-(")
 	elif args.concat is not None:
-		gtor = lambda: gtor_concat(cfg.indir, args.concat)
+		gtor = lambda: gtor_concat(cfg, args.concat)
 	
 	signal.signal(signal.SIGINT, SIGINT_handler)
-	score_Codelings(gtor)
+	score_Codelings(cfg, gtor)
 
 if __name__ == "__main__":
 	main()
