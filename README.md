@@ -10,13 +10,16 @@
 
 ### Prerequisites
 
-* **Python** - The main script ([`evolver.py`]) has been developed using Python 3.8. It 
-definitely needs at least version 3.6 (which introduced f-strings; 3.6 or above 
-is also required by the `wasmtime` module, which will be installed below). The script has not been tested with Python 
-3.6 or 3.7 (test reports welcome).
+* **Python** - The main script ([`evolver.py`]) has been developed using Python 
+3.8. It definitely needs at least version 3.6 (which introduced f-strings; 3.6 
+or above is also required by the `wasmtime` module, which will be installed 
+below). The script has not been tested with Python 3.6 or 3.7 (test reports 
+welcome!).
 
-* **The Python virtual environment module (`venv`)** - Recommended but not necessary (if not using `venv`, simply skip any lines that have "env" or "activate" in them). The `venv` module sometimes comes as 
-a separate package under Linux (e.g. `python3.8-venv`).
+* **The Python virtual environment module (`venv`)** - Recommended but not 
+essential (if not using `venv`, simply skip any lines that have "env" or 
+"activate" in them). The `venv` module sometimes comes as a separate package 
+under Linux (e.g. `python3.8-venv`).
 
 * **Git**
 
@@ -39,21 +42,21 @@ source activate
 pip install wasmtime hexdump
 ```
 
-(Reports from macOS and Windows PowerShell users would be welcome.)
+(Reports from macOS and Windows PowerShell users would be welcome!)
 
 The above should install the most recent version of the `wasmtime` WebAssembly 
-runtime. The project has been developed using 
-`wasmtime` version 0.25.0 and needs the fuel feature (which limits the number 
-of instructions executed and thereby avoids infinite loops). Fuel was 
-introduced in version 0.23.0 released in Feb 2021, so earlier versions will not 
-work.
+runtime. The project has been developed using `wasmtime` version 0.25.0 and 
+needs the fuel feature (which limits the number of instructions executed and 
+thereby avoids infinite loops). Fuel was introduced in version 0.23.0 released 
+in Feb 2021, so earlier versions will not work.
 
 ### Installing WABT
 
 WABT (The WebAssembly Binary Toolkit, affectionately known as "wabbit") is not 
-required to run the main script, [evolver.py], but it is useful when experimenting
-with WebAssembly, e.g. for converting hand-written WebAssembly text files to binary (using `wat2wasm`)
-or for disassembling the binary files produced by the main script (via `wasm-objdump -d`).
+required to run the main script ([`evolver.py`]), but it is useful when 
+experimenting with WebAssembly, e.g. for converting hand-written WebAssembly 
+text files to binary (using `wat2wasm`) or for disassembling the binary files 
+produced by the main script (via `wasm-objdump -d`).
 
 **TODO**
 
@@ -118,16 +121,16 @@ https://github.com/WebAssembly/spec/tree/master/proposals
 
 - Browser support for new features: https://webassembly.org/roadmap/
 
-This project currently produces version 1.0 of WebAssembly. The goal is for all code to be 
-executable in all 3 major browsers (Chrome, Firefox and Safari) with default 
-settings. As of March 2021, this means that we can probably start using the multi-value 
-feature from the 1.1 draft spec (functions being able to return multiple values; very 
-useful) as well as import/export of mutable globals (less useful?).
+This project currently produces version 1.0 of WebAssembly. The goal is for all 
+code to be executable in all 3 major browsers (Chrome, Firefox and Safari) with 
+default settings. As of March 2021, this means that we can probably start using 
+the multi-value feature from the 1.1 draft spec (functions being able to return 
+multiple values; very useful) as well as import/export of mutable globals (less 
+useful?).
 
 ### WABT
 
 **TODO**
-
 
 ### Wasmtime-py
 
@@ -139,7 +142,6 @@ to be run outside of the browser. This project uses the Python bindings.
 - Examples: https://github.com/bytecodealliance/wasmtime-py/tree/main/examples
 
 - Docs: https://bytecodealliance.github.io/wasmtime-py
-
 
 
 [`config.py`]: config.py
