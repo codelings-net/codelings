@@ -39,6 +39,7 @@ ln -s .env/bin/activate .
 ln -s .env/Scripts/activate .
 
 source activate
+python -m pip install --upgrade pip
 pip install wasmtime hexdump
 ```
 
