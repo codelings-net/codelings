@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import config
+import code, config
 
 from hexdump import hexdump
 from wasmtime import Config, Engine, Store, Module, Instance, Memory, Func, \
@@ -48,30 +48,6 @@ def rnd_int(n_bytes:int) -> int:
 def rnd_bytes(n_bytes:int) -> bytes:
 	return random.getrandbits(8*n_bytes).to_bytes(n_bytes,'big')
 
-aux_a = [x for x in range(1,33)]         # 1 ... 32
-aux_w = [2**x for x in range(31,-1,-1)]  # 2^31 ... 2^0
-
-def rnd_i32_0s1s() -> int:
-	"""
-	Returns mostly 0s and 1s, some 2s and 3s, etc
-	
-	Value  Probability      How P was calculated
-	=====  ===============  ==================================================
-	0-1    1/3 each         1/2**2 + 1/4**2 + 1/8**2 + 1/16**2 + 1/32**2 + ...
-	2-3    1/(3*4) each     1/4**2 + 1/8**2 + 1/16**2 + 1/32**2 + ...
-	4-7    1/(3*4**2) each  1/8**2 + 1/16**2 + 1/32**2 + ...
-	8-15   1/(3*4**3) each   :
-	 :      :
-	
-	The probabilities sum up to 1 (well almost, NB not an infinite sequence!).
-	
-	Inverse transform sampling might be quicker for the 1st step, ought to 
-	implement both and compare speeds - see the 2nd example in:
-	
-	https://en.wikipedia.org/wiki/Inverse_transform_sampling#Examples
-	"""
-	return random.getrandbits( random.choices(aux_a, weights=aux_w, k=1)[0] )
-
 def i32_load(mem:Memory, addr:int) -> int:
 	return int.from_bytes(mem.data_ptr[addr:addr+4], 'little')
 
@@ -113,336 +89,6 @@ def get_release():
 		return f.readline().strip()
 
 
-class Code:
-	"""
-	Generate short random codes that pass WebAssembly validation
-	
-	Used by the `-gen0` option in main()
-	
-	For background information see the 'Reduced Instruction Set' section
-	in `TECHNICAL_DETAILS.md`
-	"""
-	
-	# `else_fn` and `end_fn` are needed outside of RIS_opcodes, so
-	# best to use named functions
-	def else_fn(code):
-		return code.add_op(0, 0, b'\x05', 'else')
-	
-	def end_fn(code):
-		return code.add_op(0, 0, b'\x0b', 'end')
-	
-	"""
-	In terms of stack operands (pop-push):
-	
-	  sources +1: local.get i32.const
-	  
-	  neutral  0: 2x block 2x loop else 15x end br return call0 local.tee
-	              i32.load i32.load8_u i32.eqz i32.clz i32.ctz i32.popcnt
-	  
-	    sinks -1: 2x if br_if drop local.set i32.eq i32.ne i32.lt_u i32.gt_u
-	              i32.le_u i32.ge_u i32.add i32.sub i32.mul i32.div_u i32.rem_u
-	              i32.and i32.or i32.xor i32.shl i32.shr_u i32.rotl i32.rotr
-	  
-	          -2: select i32.store i32.store8
-	
-	  weighted sum of sources = +2
-	  weighted sum of sinks   = -29
-	
-	So ideally would want each source x14.5 to balance things out, but then the 
-	control instructions etc get swamped by random arithmetic ones. So let's 
-	keep the sources somewhat lower and also increase the control and memory 
-	instructions (except local.get) x2 to compensate a bit. Amping up the 
-	control and memory instructions increases the weighted sum of sinks to:
-	
-	  -1*(2*5 + 1*18) - 2*(2*3) = -40
-	 
-	so let's pick x16 for the sources so the final balance is +32 vs -40.
-	
-	""" 
-	RIS_opcodes = (
-		# operand sources
-		*(
-			# i32.const
-			# XXX TODO: weirdly this only seems to work up to 31 bits?!?
-			lambda code: code.add_op(0, 1, b'\x41' + uLEB128(rnd_i32_0s1s())),
-			
-			# local.get x - HARDCODED 4 LOCALS
-			lambda code: code.add_op( 0, 1, 
-				b'\x20' + uLEB128(random.randrange(0x04)) ),
-		)*16,
-		
-		# control and memory instructions
-		*(
-			# block bt=void
-			lambda code: code.add_op(0, 0, b'\x02\x40', 'block', targ=0),
-			# block bt=int32
-			lambda code: code.add_op(0, 0, b'\x02\x7f', 'block', targ=1),
-			
-			# loop bt=void
-			lambda code: code.add_op(0, 0, b'\x03\x40', 'loop', targ=0),
-			# loop bt=int32
-			lambda code: code.add_op(0, 0, b'\x03\x7f', 'loop', targ=1),
-			
-			# if bt=void
-			lambda code: code.add_op(1, 0, b'\x04\x40', 'if', targ=0),
-			# if bt=int32
-			lambda code: code.add_op(1, 0, b'\x04\x7f', 'if', targ=1),
-			
-			# else
-			else_fn,
-			
-			# end
-			# should be x6 (or x7?) to balance out block starts with as many
-			# ends, but need more ends as fewer of them get accepted
-			*( end_fn, )*16,
-			
-			# br l
-			lambda code: code.add_op( 0, 0, b'\x0c', 'br', 
-				dest=random.randrange(len(code.SP)) ),
-			
-			# br_if l
-			lambda code: code.add_op( 1, 0, b'\x0d', 'br_if',
-				dest=random.randrange(len(code.SP)) ),
-			
-			# return
-			lambda code: code.add_op(0, 0, b'\x0f', 'return'),
-			
-			
-			# call x=0 (i.e. a recursive call to itself)
-			lambda code: code.add_op(0, 0, b'\x10\x00'),
-			
-			
-			# drop
-			lambda code: code.add_op(1, 0, b'\x1a'),
-			
-			# select
-			lambda code: code.add_op(3, 1, b'\x1b'),
-			
-			
-			# local.set x - HARDCODED 4 LOCALS
-			lambda code: code.add_op( 1, 0,
-				b'\x21' + uLEB128(random.randrange(0x04))),
-			
-			# local.tee x - HARDCODED 4 LOCALS
-			lambda code: code.add_op( 1, 1,
-				b'\x22' + uLEB128(random.randrange(0x04))),
-			
-			# i32.load - HARDCODED POOR ALIGN (0x00)
-			lambda code: code.add_op(1, 1,
-				b'\x28\x00' + uLEB128(rnd_i32_0s1s())),
-			
-			# i32.load8_u - HARDCODED POOR ALIGN (0x00)
-			lambda code: code.add_op(1, 1,
-				b'\x2d\x00' + uLEB128(rnd_i32_0s1s())),
-			
-			# i32.store - HARDCODED POOR ALIGN (0x00)
-			lambda code: code.add_op(2, 0,
-				b'\x36\x00' + uLEB128(rnd_i32_0s1s())),
-			
-			# i32.store8 - HARDCODED POOR ALIGN (0x00)
-			lambda code: code.add_op(2, 0,
-				b'\x3a\x00' + uLEB128(rnd_i32_0s1s())),
-		)*2,
-		
-		# i32.eqz
-		lambda code: code.add_op(1, 1, b'\x45'),
-		
-		# i32.clz
-		lambda code: code.add_op(1, 1, b'\x67'),
-		
-		# i32.ctz
-		lambda code: code.add_op(1, 1, b'\x68'),
-		
-		# i32.popcnt
-		lambda code: code.add_op(1, 1, b'\x69'),
-		
-		# i32.eq
-		lambda code: code.add_op(2, 1, b'\x46'),
-		
-		# i32.ne
-		lambda code: code.add_op(2, 1, b'\x47'),
-		
-		# i32.lt_u
-		lambda code: code.add_op(2, 1, b'\x49'),
-		
-		# i32.gt_u
-		lambda code: code.add_op(2, 1, b'\x4b'),
-		
-		# i32.le_u
-		lambda code: code.add_op(2, 1, b'\x4d'),
-		
-		# i32.ge_u
-		lambda code: code.add_op(2, 1, b'\x4f'),
-		
-		# i32.add
-		lambda code: code.add_op(2, 1, b'\x6a'),
-		
-		# i32.sub
-		lambda code: code.add_op(2, 1, b'\x6b'),
-		
-		# i32.mul
-		lambda code: code.add_op(2, 1, b'\x6c'),
-		
-		# i32.div_u
-		lambda code: code.add_op(2, 1, b'\x6e'),
-		
-		# i32.rem_u
-		lambda code: code.add_op(2, 1, b'\x70'),
-		
-		# i32.and
-		lambda code: code.add_op(2, 1, b'\x71'),
-		
-		# i32.or
-		lambda code: code.add_op(2, 1, b'\x72'),
-		
-		# i32.xor
-		lambda code: code.add_op(2, 1, b'\x73'),
-		
-		# i32.shl
-		lambda code: code.add_op(2, 1, b'\x74'),
-		
-		# i32.shr_u
-		lambda code: code.add_op(2, 1, b'\x76'),
-		
-		# i32.rotl
-		lambda code: code.add_op(2, 1, b'\x77'),
-		
-		# i32.rotr
-		lambda code: code.add_op(2, 1, b'\x78'),
-	)
-	
-	def __init__(self, n_bytes:int) -> None:
-		
-		"""
-		         SP: "Stack Pointer(s)", sns = types.SimpleNamespace
-		        cur: "current" = number of values on the stack right now
-		       targ: target number of values on the stack for current block
-		             ('end' only emitted when cur=targ)
-		    br_targ: target for 'br's branching down to this block
-		             (=targ for all blocks *except* loop, where br_targ=0)
-		   if_block: is this an 'if' block where an 'else' can be issued?
-		  need_else: is this an 'if' block with targ>0 that *needs* an 'else'?
-		"""
-		self.SP = [ sns(cur=0, targ=0, br_targ=0, 
-			if_block=False, need_else=False) ]
-		
-		# output
-		self.b = b''
-		
-		# is it time to wrap things up?
-		# if True, ok to generate the final 'end' instruction for the function
-		self.closing_down = False
-		
-		self.generate(n_bytes)
-	
-	def generate(self, n_bytes:int) -> None:
-		while len(self.b) < n_bytes:
-			random.choice(self.RIS_opcodes)(self)
-		
-		self.closing_down = True
-		
-		while len(self.SP) > 0:
-			random.choice(self.RIS_opcodes)(self)
-	
-	def _force_block_end(self):
-		"""
-		*** ONLY CALL THIS AFTER YOU'VE ISSUED A 'BR' OR A 'RETURN' ***
-		
-		Force a block end. In general ending a block means an 'end', but 
-		'if' blocks with targ>0 require an 'else' first, otherwise we'd get
-		the following error:
-		
-		  "else is expected: if block has a type that can't be implemented 
-		   with a no-op"
-		"""
-		cur_SP = self.SP[-1]
-		
-		# this is the forcing bit: after a 'br' or a 'return', the target is
-		# irrelevant as the end won't be reached anyway
-		cur_SP.cur = cur_SP.targ
-		
-		if cur_SP.need_else:
-			self.else_fn()
-		else:
-			self.end_fn()
-	
-	def add_op(self, pop:int, push:int, b:bytes, 
-			op:str=None, targ:int=None, dest:int=None) -> None:
-		"""
-		Add an instruction to the code
-		
-		   pop: how many operands (params) are popped from the operand stack
-		  push: how many operands (results) are pushed onto the operand stack
-		     b: bytes to add to self.b *if* opcode accepted
-		    op: operations that require special handling
-		  targ: SP[].targ for new blocks (used by 'block', 'loop' and 'if') 
-		  dest: destination for branch instructions (used by 'br' and 'br_if')
-		"""
-		# empty self.SP means we've issued the final 'end' instruction,
-		# cannot add any further instructions after that
-		if len(self.SP) == 0:
-			return
-		
-		cur_SP = self.SP[-1]
-		#print(f"add_op: level={len(self.SP)-1} cur_SP={cur_SP} "
-		#	f"closing_down={self.closing_down} op='{op}'")
-		
-		# most common case FIRST
-		if op is None:
-			if cur_SP.cur >= pop:
-				self.b += b
-				cur_SP.cur += -pop + push
-		# 2nd most common case
-		elif op == 'end':
-			# 1st line: no level 0 'end' until we're closing_down
-			if (self.closing_down or len(self.SP) > 1) \
-					and cur_SP.cur == cur_SP.targ:
-				if cur_SP.need_else:
-					# issue an 'else' instead of an 'end'
-					self.else_fn()
-				else:
-					self.b += b
-					self.SP.pop()
-					
-					if len(self.SP) > 0:
-						self.SP[-1].cur += cur_SP.targ
-		# 3rd most common case
-		elif op in ('block', 'loop', 'if'):
-			#                        no new blocks once closing_down
-			if cur_SP.cur >= pop and not self.closing_down:
-				self.add_op(pop, push, b)
-				self.SP.append(
-					sns( cur=0, targ=targ,
-						br_targ=0 if op=='loop' else targ, 
-						if_block=(op=='if'),
-						need_else=True if op=='if' and targ>0 else False ) )
-		elif op == 'else':
-			if cur_SP.if_block is True and cur_SP.cur == cur_SP.targ:
-				self.b += b
-				cur_SP.cur = 0
-				cur_SP.if_block = False
-				cur_SP.need_else = False
-		elif op == 'return':
-			# 1st line: we'll probably issue an 'end' as well, but 
-			#           "no level 0 'end' until we're closing_down"
-			# 2nd line: will be needed if/when the function has br_targ>0
-			if (self.closing_down or len(self.SP) > 1) \
-					and cur_SP.cur >= self.SP[0].br_targ:
-				self.b += b
-				self._force_block_end()
-		elif op == 'br':
-			if cur_SP.cur >= self.SP[-1-dest].br_targ \
-					and (self.closing_down or len(self.SP) > 1):
-				self.b += b + uLEB128(dest)
-				self._force_block_end()
-		elif op == 'br_if':
-			if cur_SP.cur-pop >= self.SP[-1-dest].br_targ:
-				self.b += b + uLEB128(dest)
-				cur_SP.cur -= pop
-		else:
-			raise ValueError(f"Unknown opcode '{op}'")
-
-
 class Codeling:
 	def __init__(self, cfg:'Config', json_fname:str=None, wasm_fname:str=None, 
 			json:dict=None, gen0=None, deferred=False):
@@ -464,6 +110,10 @@ class Codeling:
 			self._deferred = None
 		
 		self.cfg = cfg
+		
+		config = Config()
+		config.consume_fuel = True
+		self.store = Store(Engine(config))
 		
 		# NB read_wasm() is an important part of scoring (validation step)
 		# and takes place at that point
@@ -489,20 +139,11 @@ class Codeling:
 			self.__init__(**self._deferred)
 			self._deferred = None
 	
-	def gen(self) -> int:
-		return int( re.match('^([0-9a-f]{4})-', self.json['ID']).group(1), 16 )
+	#def gen(self) -> int:
+	#	return int( re.match('^([0-9a-f]{4})-', self.json['ID']).group(1), 16 )
 	
 	def b(self) -> bytes:
 		return bytes.fromhex(self.json['code'])
-	
-	def read_json(self, fname:str):
-		with open(fname, 'r') as f:
-			self.json = json.loads(f.read())
-		
-		if 'json_version' not in self.json:
-			self.json['json_version'] = 1
-		
-		self._json_fname = fname
 	
 	def write_json(self, outdir:str) -> str:
 		if 'json_version' not in self.json:
@@ -515,32 +156,16 @@ class Codeling:
 		self._json_fname = fname
 		return fname
 	
-	def read_wasm(self, fname:str):
-		config = Config()
-		config.consume_fuel = True
-		self.store = Store(Engine(config))
-		module = Module.from_file(self.store.engine, fname)
-		self._instance = Instance(self.store, module, [])
+	def read_json(self, fname:str):
+		with open(fname, 'r') as f:
+			self.json = json.loads(f.read())
 		
-		self.mem = self._instance.exports['m']
-		assert type(self.mem) is Memory
+		if 'json_version' not in self.json:
+			self.json['json_version'] = 1
 		
-		self._f = self._instance.exports['f']
-		assert type(self._f) is Func
-		
-		self.rnd_addr, self.tmp_addr, self.inp_addr, self.out_addr = \
-			[ i32_load(self.mem, addr) for addr in range(0x00, 0x10, 0x04) ]
-		
-		self._wasm_fname = fname
+		self._json_fname = fname
 	
-	def write_wasm(self, outdir:str) -> str:
-		fname = os.path.join(outdir, self.json['ID'] + '.wasm')
-		if os.path.exists(fname):
-			return fname
-		
-		with open(self.cfg.template, "rb") as f:
-			template = f.read()
-		
+	def wasm_bytes(self) -> bytes:
 		"""
 		XXX TODO UPDATE THIS
 		
@@ -555,15 +180,39 @@ class Codeling:
 		
 		   0x01 (1 locals entry: ) 0x10 (declare 16 locals of ) 0x7f (type i32)
 		"""
-		wasm = template[:0x23] \
+		return self.cfg.template[:0x23] \
 			+ size( b'\x01' + size(b'\x01\x10\x7f' + self.b()) ) \
-			+ template[0x36:]
-		
-		with open(fname, "wb") as f:
-			f.write(wasm)
+			+ self.cfg.template[0x36:]
+	
+	def write_wasm(self, wasm_bytes:bytes, outdir:str) -> str:
+		fname = os.path.join(outdir, self.json['ID'] + '.wasm')
+		if not os.path.exists(fname):
+			with open(fname, "wb") as f:
+				f.write(wasm_bytes)
 		
 		self._wasm_fname = fname
 		return fname
+	
+	def create_instance(self, module:'Module'):
+		instance = Instance(self.store, module, [])
+		
+		self.mem = instance.exports['m']
+		assert type(self.mem) is Memory
+		
+		self._f = instance.exports['f']
+		assert type(self._f) is Func
+		
+		self.rnd_addr, self.tmp_addr, self.inp_addr, self.out_addr = \
+			[ i32_load(self.mem, addr) for addr in range(0x00, 0x10, 0x04) ]
+		
+		self._instance = instance
+	
+	def read_wasm(self, fname:str):
+		self.create_instance( Module.from_file(self.store.engine, fname) )
+		self._wasm_fname = fname
+	
+	def from_bytes(self, b:bytes):
+		self.create_instance( Module(self.store.engine, b) )
 	
 	def link_json_wasm(self, outdir) -> None:
 		for f in (self._json_fname, self._wasm_fname):
@@ -617,13 +266,13 @@ class Codeling:
 	
 	def gen0(self, ID:str, n_bytes:int) -> None:
 		while True:
-			code = Code(n_bytes)
-			if len(code.b) <= 4*n_bytes:
+			c = code.Code(n_bytes)
+			if len(c.b) <= 4*n_bytes:
 				break
 		
 		self.json = {
 			'ID': ID,
-			'code': code.b.hex(),
+			'code': c.b.hex(),
 			'created': nice_now_UTC(),
 			'parents': [],
 			'created_by': self.cfg.this_script_release + ' Codeling.gen0()' }
@@ -734,15 +383,18 @@ class Codeling:
 		
 		wasm_fname = self._init_wasm_fname
 		if wasm_fname is None:
-			wasm_fname = self.write_wasm(self.cfg.tmpdir)
-			tmp_wasm = True
+			in_memory = True
+			wasm_bytes = self.wasm_bytes()
 		else:
-			tmp_wasm = False
+			in_memory = False
 		
 		# validation
 		t_valid = time.time()
 		try:
-			self.read_wasm(wasm_fname)
+			if in_memory:
+				self.from_bytes(wasm_bytes)
+			else:
+				self.read_wasm(wasm_fname)
 		except WasmtimeError as e:
 			t_score = time.time()
 			res = sns( ID=self.json['ID'], score=-0x80, 
@@ -759,9 +411,8 @@ class Codeling:
 		if self.cfg.thresh is not None and res.score >= self.cfg.thresh:
 			res.status = 'accept'
 			
-			if tmp_wasm:
-				# NB cannot link because /tmp could be on a different device
-				shutil.move(self._wasm_fname, self.cfg.outdir)
+			if in_memory:
+				self.write_wasm(wasm_bytes, self.cfg.outdir)
 			else:
 				link2dir(self._wasm_fname, self.cfg.outdir)
 			
@@ -771,9 +422,6 @@ class Codeling:
 				link2dir(self._json_fname, self.cfg.outdir)
 		else:
 			res.status = 'reject'
-			
-			if tmp_wasm:
-				os.remove(wasm_fname)
 		
 		res.t_gen = t_valid - t_gen
 		res.t_valid = t_score - t_valid
@@ -933,7 +581,7 @@ def main():
 		('fn', 'v02'),
 		('thresh', None),
 		('nproc', multiprocessing.cpu_count()),
-		('template', 'template.wasm') )
+		('template_file', 'template.wasm') )
 	
 	# if the user has already set the option in Config.py, keep their value
 	for attr, val in defaults:
@@ -1033,9 +681,6 @@ def main():
 	parser.add_argument('-outdir', type=type_dir_str, metavar='path', 
 		help=f"""Change the output directory to 'path'. (Default: 
 		'{cfg.outdir}')""")
-	parser.add_argument('-tmpdir', type=type_dir_str, metavar='path', 
-		help=f"""Change the directory where temporary files are stored to 
-		'path'. (Default: '{cfg.tmpdir}')""")
 	parser.add_argument('-nproc', type=type_int_ish, metavar='N', help=f"""Set
 		the number of worker processes to use in the pool to N. (Default for 
 		this machine: {cfg.nproc})""")
@@ -1062,9 +707,6 @@ def main():
 		if a is not None:
 			setattr(cfg, param, a)
 	
-	if not os.path.exists(cfg.tmpdir):
-		os.makedirs(cfg.tmpdir)
-	
 	gtor = None
 	
 	if args.alive:
@@ -1080,7 +722,11 @@ def main():
 	elif args.concat is not None:
 		gtor = lambda: gtor_concat(cfg, args.concat)
 	
+	with open(cfg.template_file, "rb") as f:
+		cfg.template = f.read()
+	
 	signal.signal(signal.SIGINT, SIGINT_handler)
+	
 	score_Codelings(cfg, gtor)
 
 if __name__ == "__main__":
