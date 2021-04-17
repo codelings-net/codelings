@@ -448,7 +448,7 @@ def score_Codelings(cfg:'Config', cdl_gtor) -> None:
 	
 	n_scored, n_accepted = 0, 0
 	n_scored_prev, t_prev = 0, t_start
-	with multiprocessing.Pool(processes=cfg.nproc) as p:
+	with multiprocessing.Pool(cfg.nproc, init_pool_worker) as p:
 		# `.imap` because `.map` converts the iterable to a list
 		# `_unordered` because don't care about order, really
 		# *** when debugging use `map` instead for cleaner error messages ***
@@ -726,8 +726,10 @@ def main():
 		cfg.template = f.read()
 	
 	signal.signal(signal.SIGINT, SIGINT_handler)
-	
 	score_Codelings(cfg, gtor)
+
+def init_pool_worker():
+	signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 if __name__ == "__main__":
 	main()
