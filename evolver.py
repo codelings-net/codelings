@@ -547,10 +547,6 @@ def list_available_fns():
 		for c, d in zip([code] + ['']*len(wrapped), wrapped):
 			print(f"  {c:{maxL}}  {d}")
 
-def SIGINT_handler(sig, frame):
-	global STOPPING  # signal handler, so needs to be explicitly declared
-	STOPPING = True
-
 def main():
 	"""Generate, mutate and score codelings"""
 	
@@ -727,6 +723,10 @@ def main():
 	
 	signal.signal(signal.SIGINT, SIGINT_handler)
 	score_Codelings(cfg, gtor)
+
+def SIGINT_handler(sig, frame):
+	global STOPPING  # signal handler, so needs to be explicitly declared
+	STOPPING = True
 
 def init_pool_worker():
 	signal.signal(signal.SIGINT, signal.SIG_IGN)
