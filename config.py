@@ -1,3 +1,3 @@
 class Config:
-	indir = 'alive'
-	outdir = 'out'
+    indir = 'alive'
+    outdir = 'out'
