@@ -546,6 +546,7 @@ def gtor_gen0(cfg: 'Config', N: int) -> 'Codeling':
         ID = f"{cfg.runid}-{i:012}"
         yield Codeling(cfg, gen0=(ID, cfg.length), deferred=True)
 
+
 # TODO XXX uses LastID, needs a rewrite
 def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
     IDs = LastID(write_at_exit=False)
