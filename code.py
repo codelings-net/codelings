@@ -1,13 +1,17 @@
 from evolver import uLEB128
 
-from types import SimpleNamespace as sns
+from dataclasses import dataclass
+from copy import copy
 
 import random
 
 
-aux_a = [x for x in range(1, 33)]         # 1 ... 32
-aux_w = [2**x for x in range(31, -1, -1)]  # 2^31 ... 2^0
+# TODO XXX get rid of this
+from types import SimpleNamespace as sns
 
+
+_a = [x for x in range(1, 33)]          # 1 ... 32
+_w = [2**x for x in range(31, -1, -1)]  # 2^31 ... 2^0
 
 def rnd_i32_0s1s() -> int:
     """
@@ -28,21 +32,245 @@ def rnd_i32_0s1s() -> int:
     
     https://en.wikipedia.org/wiki/Inverse_transform_sampling#Examples
     """
-    return random.getrandbits(random.choices(aux_a, weights=aux_w, k=1)[0])
+    return random.getrandbits(random.choices(_a, weights=_w, k=1)[0])
+
+
+@dataclass
+class Instr:
+    """
+    A single instruction within a WebAssembly program
+    
+    Used directly for simple instructions and as a base class for more 
+    complicated ones.
+    
+    The object is initialised in two steps:
+    
+    1. A list of all available instructions is created as the class variable
+       Code.RIS, but this leaves imm, prev_instr and stack_after set to None
+    
+    2. When append() is called on these Instr objects, it creates a copy of 
+       itself, completes the initialisation *of the copy* and then appends
+       it to the CodeBlock
+    """
+    opcode: bytes           # binary opcode
+    pop: int                # number of params popped from the operand stack
+    push: int               # number of results pushed onto the operand stack
+    imm: bytes \            # binary immediate
+        = field(default=None, init=False)
+    prev_instr: 'Instr' \   # previous instruction within a CodeBlock
+        = field(default=None, init=False)
+    stack_after: int \      # number of operands on the stack after this instr
+        = field(default=None, init=False)
+    
+    def to_bytes(self):
+        if imm is not None:
+            return opcode + imm
+        else:
+            return opcode
+    
+    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
+        prev_instr = blk.content[-1]
+        if prev_instr.stack_after < self.pop:
+            return (False, blk)
+        
+        cp = copy(self)
+        cp.prev_instr = prev_instr
+        cp.stack_after = prev_instr.stack_after - self.pop + self.push
+        blk.content.append(cp)
+        return (True, blk)
+
+
+@dataclass
+class DummyInstr(Instr):
+    """
+    Dummy intruction inserted at the start of each function
+    
+    Instr.append() assumes that there always is a prev_instr. All blocks begin 
+    with the block instruction (`block` | `loop` | `if`), but that leaves the 
+    function level - which is where we insert this dummy.
+    """ 
+    def __init__(self):
+        self.opcode = b''
+        self.pop = 0
+        self.push = 0
+        self.stack_after = 0
+
+
+@dataclass
+class BlockInstr(Instr):
+    """Block instructions: `block`, `loop` and `if`"""
+    
+    instr_type: str         # 'block' | 'loop' | 'if'
+     
+    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
+        if c.closing_down:
+            return (False, blk)
+        
+        prev_instr = blk.content[-1]
+        if prev_instr.stack_after < self.pop:
+            return (False, blk)
+        
+        cp = copy(self)
+        cp.stack_after = 0
+        
+        # block type: 0x40 = empty, 0x7f = i32
+        cp.imm = random.choice((b'\x40', b'\x7f'))
+        
+        targ = 1 if cp.imm == b'\x7f' else 0
+        br_targ = 0 if cp.instr_type == 'loop' else targ
+        if_block = (cp.instr_type == 'if')
+        need_else = (if_block and targ > 0)
+        new_blk = CodeBlock(targ, br_targ, if_block, need_else, blk, cp)
+        return (True, new_blk)
+
+
+@dataclass
+class ElseInstr(Instr):
+    """The `else` instruction"""
+   
+    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
+        if not (blk.if_block and blk.else_index is None):
+            return (False, blk)
+        
+        prev_instr = blk.content[-1]
+        if prev_instr.stack_after != blk.targ:
+            return (False, blk)
+        
+        cp = copy(self)
+        cp.stack_after = 0
+        blk.else_index = len(blk.content)
+        blk.content.append(cp)
+        return (True, blk)
+
+
+@dataclass
+class EndInstr(Instr):
+    """The `end` instruction"""
+    
+            if (self.closing_down or len(self.SP) > 1) \
+                    and cur_SP.cur == cur_SP.targ:
+                if cur_SP.need_else:
+                    # issue an 'else' instead of an 'end'
+                    self.else_fn()
+                else:
+                    self.b += b
+                    self.SP.pop()
+        
+                    if len(self.SP) > 0:
+                        self.SP[-1].cur += cur_SP.targ
+    
+    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
+        if blk.parents is None and not c.closing_down:
+            return (False, blk)
+        
+        if blk.need_else:
+            return c.else_instr(blk, c)
+        
+        prev_instr = blk.content[-1]
+        if prev_instr.stack_after != blk.targ:
+            return (False, blk)
+        
+        cp = copy(self)
+        cp.stack_after = prev_instr.stack_after
+        blk.else_index = len(blk.content)
+        blk.content.append(cp)
+        return (True, blk)
+
+
+"""
+        else:
+            # block type: 0x40 = empty, 0x7f = i32
+            self.imm = random.choice((b'\x40', b'\x7f'))
+            
+            targ = 1 if self.imm == b'\x7f' else 0
+            br_targ = 0 if instr_type == 'loop' else targ
+            if_block = (instr_type == 'if')
+            need_else = (if_block and targ > 0)
+            new_blk = CodeBlock(targ, br_targ, if_block, need_else, blk)
+            new_blk.content.append(self)
+            return (True, new_blk)    
+
+        imm     class of instruction immediate
+        spec    code for instructions that require special handling
+        targ    stack target for new blocks (used by 'block', 'loop' and 'if')
+        dest    destination for branch instructions (used by 'br' and 'br_if')
+
+                 imm: str = None,
+                 spec: str = None,
+                 targ: int = None,
+                 dest: int = None):
+"""
+
+@dataclass
+class CodeBlock(Instr):
+    """
+    A block of WebAssembly code
+    
+    Behaves like a pseudo-instruction: opcode and imm are None, but 
+    the rest of the variables are defined and used
+    
+    """
+    
+    targ: int                # target number of operands on the stack
+                             # (`end` only emitted when stack size == targ)
+    br_targ: int             # target for `br`s branching down to this block
+                             # (=targ except for `loop`, where br_targ=0)
+    if_block: bool           # is this an `if` block?
+                             # (an `else` can only be issued within an if block)
+    need_else: bool          # is this an `if` block that needs an `else`?
+                             # (targ>0 blocks must have an `else` part)
+    else_index: int = None   # index of the `else` instruction within content
+    content: list = None     # instructions and other blocks inside this block
+    parents: list = None     # list of blocks inside which this block is nested
+                             # (needed for `br`; None => this block is Level 0)
+    stack_after: int = None
+    
+    def __init__(self, targ: int, br_targ: int, if_block: bool, need_else: bool,
+                 parent: 'CodeBlock' = None, first_instr: int = DummyInstr()):
+        self.targ = targ
+        self.br_targ = br_targ
+        self.if_block = if_block
+        self.need_else = need_else
+        
+        if parent is None:
+            self.parents = []
+        else:
+            self.parents = copy(parent.parents)
+            self.parents.append(parent)
+        
+        self.content = [first_instr]
+    
+    def to_bytes(self):
+        return b''.join([i.to_bytes() for i in self.content])
+    
+    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
+        raise 
+    
 
 
 class Code:
     """
-    Generate short random codes that pass WebAssembly validation
+    - Generate random codes that pass WebAssembly validation
     
-    Used by the `-gen0` option in main()
+    - Parse existing codes and mutate them
+    
+    Used by the `-gen0` and `-mutate` options in main() in `evolver.py`
     
     For background information see the 'Reduced Instruction Set' section
-    in `TECHNICAL_DETAILS.md`
+    in `TECHNICAL_DETAILS.md` XXX TODO
     """
-
-    # `else_fn` and `end_fn` are needed outside of RIS_opcodes, so
-    # best to use named functions
+    
+    else_instr = ElseInstr(0, 0, b'\x05')
+    end_instr = EndInstr(0, 0, b'\x05')
+    RIS = ()
+    
+    def __init__(self):
+        self.closing_down = False
+    
+    
+    
+    # `else_fn` and `end_fn` are needed outside of RIS_opcodes,
+    # so need named functions
     def else_fn(code):
         return code.add_op(0, 0, b'\x05', 'else')
     
@@ -53,23 +281,25 @@ class Code:
     In terms of stack operands (pop-push):
     
       sources +1: local.get i32.const
-    
-      neutral  0: 2x block 2x loop else 15x end br return call0 local.tee
-                  i32.load i32.load8_u i32.eqz i32.clz i32.ctz i32.popcnt
-    
-        sinks -1: 2x if br_if drop local.set i32.eq i32.ne i32.lt_u i32.gt_u
-                  i32.le_u i32.ge_u i32.add i32.sub i32.mul i32.div_u i32.rem_u
-                  i32.and i32.or i32.xor i32.shl i32.shr_u i32.rotl i32.rotr
-    
-              -2: select i32.store i32.store8
-    
+      
+      neutral  0: 2x block  2x loop  else  16x end  br  return  call0
+                  local.tee  i32.load  i32.load8_u  i32.eqz  i32.clz  i32.ctz
+                  i32.popcnt
+      
+        sinks -1: 2x if  br_if  drop  local.set  i32.eq  i32.ne  i32.lt_u
+                  i32.gt_u  i32.le_u  i32.ge_u  i32.add  i32.sub  i32.mul
+                  i32.div_u  i32.rem_u  i32.and  i32.or  i32.xor  i32.shl
+                  i32.shr_u  i32.rotl  i32.rotr
+      
+              -2: select  i32.store  i32.store8
+      
       weighted sum of sources = +2
       weighted sum of sinks   = -29
     
-    So ideally would want each source x14.5 to balance things out, but then the 
-    control instructions etc get swamped by random arithmetic ones. So let's 
-    keep the sources somewhat lower and also increase the control and memory 
-    instructions (except local.get) x2 to compensate a bit. Amping up the 
+    So ideally would want each source x14.5 to balance things out, but then the
+    control instructions etc get swamped by random arithmetic ones. So let's
+    keep the sources somewhat lower and also increase the control and memory
+    instructions (except local.get) x2 to compensate a bit. Amping up the
     control and memory instructions increases the weighted sum of sinks to:
     
       -1*(2*5 + 1*18) - 2*(2*3) = -40
@@ -85,7 +315,7 @@ class Code:
             
             # local.get x - HARDCODED 4 LOCALS
             lambda code: code.add_op(0, 1,
-                                     b'\x20' + uLEB128(random.randrange(0x04))),
+                b'\x20' + uLEB128(random.randrange(0x04))),
         ) * 16,
         
         # control and memory instructions
@@ -109,17 +339,17 @@ class Code:
             else_fn,
             
             # end
-            # should be x6 (or x7?) to balance out block starts with as many
-            # ends, but need more ends as fewer of them get accepted
+            # should be x6 to balance out block starts with as many block ends,
+            # but need more ends as fewer of them get accepted
             *(end_fn, ) * 16,
             
             # br l
             lambda code: code.add_op(0, 0, b'\x0c', 'br',
-                                     dest=random.randrange(len(code.SP))),
+                dest=random.randrange(len(code.SP))),
             
             # br_if l
             lambda code: code.add_op(1, 0, b'\x0d', 'br_if',
-                                     dest=random.randrange(len(code.SP))),
+                dest=random.randrange(len(code.SP))),
             
             # return
             lambda code: code.add_op(0, 0, b'\x0f', 'return'),
@@ -135,27 +365,27 @@ class Code:
             
             # local.set x - HARDCODED 4 LOCALS
             lambda code: code.add_op(1, 0,
-                                     b'\x21' + uLEB128(random.randrange(0x04))),
+                b'\x21' + uLEB128(random.randrange(0x04))),
             
             # local.tee x - HARDCODED 4 LOCALS
             lambda code: code.add_op(1, 1,
-                                     b'\x22' + uLEB128(random.randrange(0x04))),
+                b'\x22' + uLEB128(random.randrange(0x04))),
             
             # i32.load - HARDCODED POOR ALIGN (0x00)
             lambda code: code.add_op(1, 1,
-                                     b'\x28\x00' + uLEB128(rnd_i32_0s1s())),
+                b'\x28\x00' + uLEB128(rnd_i32_0s1s())),
             
             # i32.load8_u - HARDCODED POOR ALIGN (0x00)
             lambda code: code.add_op(1, 1,
-                                     b'\x2d\x00' + uLEB128(rnd_i32_0s1s())),
+                b'\x2d\x00' + uLEB128(rnd_i32_0s1s())),
             
             # i32.store - HARDCODED POOR ALIGN (0x00)
             lambda code: code.add_op(2, 0,
-                                     b'\x36\x00' + uLEB128(rnd_i32_0s1s())),
+                b'\x36\x00' + uLEB128(rnd_i32_0s1s())),
             
             # i32.store8 - HARDCODED POOR ALIGN (0x00)
             lambda code: code.add_op(2, 0,
-                                     b'\x3a\x00' + uLEB128(rnd_i32_0s1s())),
+                b'\x3a\x00' + uLEB128(rnd_i32_0s1s())),
         ) * 2,
         
         lambda code: code.add_op(1, 1, b'\x45'),		# i32.eqz
