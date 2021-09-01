@@ -782,6 +782,7 @@ def SIGINT_handler(sig, frame):
 
 
 def init_pool_worker():
+    # ignore SIGINT in pool workers
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
