@@ -1,6 +1,5 @@
 from evolver import uLEB128
 
-from dataclasses import dataclass
 from copy import copy
 
 import random
@@ -35,250 +34,444 @@ def rnd_i32_0s1s() -> int:
     return random.getrandbits(random.choices(_a, weights=_w, k=1)[0])
 
 
-@dataclass
+### TODO ###
+### no imm in Instr, derive InstrImm that has a uLEB128 immediate + numerical 
+### value for it - imm_b, imm_i ... will simplify parsing later on
+
 class Instr:
     """
     A single instruction within a WebAssembly program
     
     Used directly for simple instructions and as a base class for more 
-    complicated ones.
+    complicated ones
     
     The object is initialised in two steps:
     
     1. A list of all available instructions is created as the class variable
-       Code.RIS, but this leaves imm, prev_instr and stack_after set to None
+       Function.RIS_source, but this leaves imm and stack_after set to None
     
-    2. When append() is called on these Instr objects, it creates a copy of 
+    2. When append_to() is called on these Instr objects, it creates a copy of 
        itself, completes the initialisation *of the copy* and then appends
        it to the CodeBlock
+    
+    Instance variables:
+    
+      opcode: bytes         binary opcode
+      pop: int              number of params popped from the operand stack
+      push: int             number of results pushed onto the operand stack
+      imm: bytes            binary immediate
+      stack_after: int      number of operands on the stack after this instr
+    
     """
-    opcode: bytes           # binary opcode
-    pop: int                # number of params popped from the operand stack
-    push: int               # number of results pushed onto the operand stack
-    imm: bytes \            # binary immediate
-        = field(default=None, init=False)
-    prev_instr: 'Instr' \   # previous instruction within a CodeBlock
-        = field(default=None, init=False)
-    stack_after: int \      # number of operands on the stack after this instr
-        = field(default=None, init=False)
-    
+    def __init__(opcode: bytes, pop: int, push: int):
+        self.opcode = opcode
+        self.pop = pop
+        self.push = push
+        
+        self.imm = None
+        self.stack_after = None
+
     def to_bytes(self):
-        if imm is not None:
-            return opcode + imm
+        if self.imm is not None:
+            return self.opcode + self.imm
         else:
-            return opcode
+            return self.opcode
     
-    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
-        prev_instr = blk.content[-1]
-        if prev_instr.stack_after < self.pop:
-            return (False, blk)
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
+        
+        if f.last_instr.stack_after < self.pop:
+            return False
         
         cp = copy(self)
-        cp.prev_instr = prev_instr
-        cp.stack_after = prev_instr.stack_after - self.pop + self.push
-        blk.content.append(cp)
-        return (True, blk)
+        cp.stack_after = f.last_instr.stack_after - self.pop + self.push
+        f.cur_blk.content.append(cp)
+        f.last_instr = cp
+        return True
 
 
-@dataclass
-class DummyInstr(Instr):
+class FnStart(Instr):
     """
     Dummy intruction inserted at the start of each function
     
-    Instr.append() assumes that there always is a prev_instr. All blocks begin 
-    with the block instruction (`block` | `loop` | `if`), but that leaves the 
-    function level - which is where we insert this dummy.
+    Instr.append_to() assumes that there is a last_instr. All blocks begin with 
+    the block instruction (`block` | `loop` | `if`), but that leaves the 
+    function-level block - which is where we insert this dummy.
+    
     """ 
-    def __init__(self):
-        self.opcode = b''
-        self.pop = 0
-        self.push = 0
+    def __init__(self, targ: int):
+        super().__init__(opcode=b'', pop=0, push=0)
         self.stack_after = 0
 
 
-@dataclass
 class BlockInstr(Instr):
-    """Block instructions: `block`, `loop` and `if`"""
+    """
+    Block instructions: `block`, `loop` and `if`
     
-    instr_type: str         # 'block' | 'loop' | 'if'
+    Instance variables:
+    
+      block_type: str       'block' | 'loop' | 'if'
+      return_type: str      'empty' | 'i32'
+    
+    """
+    def __init__(self, opcode: bytes, pop: int, push: int, block_type: str):
+        super().__init__(opcode, pop, push)
+        self.block_type = block_type
+        self.return_type = None
      
-    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
-        if c.closing_down:
-            return (False, blk)
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
         
-        prev_instr = blk.content[-1]
-        if prev_instr.stack_after < self.pop:
-            return (False, blk)
+        if not f.new_blks_OK or f.last_instr.stack_after < self.pop:
+            return False
         
         cp = copy(self)
         cp.stack_after = 0
         
         # block type: 0x40 = empty, 0x7f = i32
         cp.imm = random.choice((b'\x40', b'\x7f'))
+        cp.return_type = 'empty' if cp.imm == b'\x40' else 'i32'
         
-        targ = 1 if cp.imm == b'\x7f' else 0
-        br_targ = 0 if cp.instr_type == 'loop' else targ
-        if_block = (cp.instr_type == 'if')
-        need_else = (if_block and targ > 0)
-        new_blk = CodeBlock(targ, br_targ, if_block, need_else, blk, cp)
-        return (True, new_blk)
+        new_blk = CodeBlock(instr0=cp, parent=f.cur_blk)
+        f.cur_blk.content.append(new_blk)
+        f.cur_blk = new_blk
+        f.last_instr = cp
+        return True
 
 
-@dataclass
 class ElseInstr(Instr):
     """The `else` instruction"""
    
-    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
-        if not (blk.if_block and blk.else_index is None):
-            return (False, blk)
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
         
-        prev_instr = blk.content[-1]
-        if prev_instr.stack_after != blk.targ:
-            return (False, blk)
+        if not (f.cur_blk.if_block and f.cur_blk.else_index is None):
+            return False
+        
+        if f.last_instr.stack_after != f.cur_blk.targ:
+            return False
         
         cp = copy(self)
         cp.stack_after = 0
-        blk.else_index = len(blk.content)
-        blk.content.append(cp)
-        return (True, blk)
+        f.cur_blk.need_else = False
+        f.cur_blk.else_index = len(f.cur_blk.content)
+        f.cur_blk.content.append(cp)
+        f.last_instr = cp
+        return True
 
 
-@dataclass
 class EndInstr(Instr):
     """The `end` instruction"""
     
-            if (self.closing_down or len(self.SP) > 1) \
-                    and cur_SP.cur == cur_SP.targ:
-                if cur_SP.need_else:
-                    # issue an 'else' instead of an 'end'
-                    self.else_fn()
-                else:
-                    self.b += b
-                    self.SP.pop()
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
         
-                    if len(self.SP) > 0:
-                        self.SP[-1].cur += cur_SP.targ
-    
-    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
-        if blk.parents is None and not c.closing_down:
-            return (False, blk)
+        if f.cur_blk.L0 and not f.L0_end_OK:
+            return False
         
-        if blk.need_else:
-            return c.else_instr(blk, c)
+        if f.last_instr.stack_after != f.cur_blk.targ:
+            return False
         
-        prev_instr = blk.content[-1]
-        if prev_instr.stack_after != blk.targ:
-            return (False, blk)
+        # `if` blocks with targ>0 need an `else`, otherwise we'd get an error
+        if f.cur_blk.need_else:
+            if f.creative_OK:
+                return Function.else_instr.append_to(f)
+            else:
+                return False
         
         cp = copy(self)
-        cp.stack_after = prev_instr.stack_after
-        blk.else_index = len(blk.content)
-        blk.content.append(cp)
-        return (True, blk)
-
-
-"""
+        cp.stack_after = f.last_instr.stack_after
+        f.cur_blk.content.append(cp)
+        
+        if f.cur_blk.L0:
+            f.last_instr = None
+            f.cur_blk = None
         else:
-            # block type: 0x40 = empty, 0x7f = i32
-            self.imm = random.choice((b'\x40', b'\x7f'))
+            f.last_instr = f.cur_blk
+            f.cur_blk = f.cur_blk.blocks[-2]
+        
+        return True
+
+
+class BranchInstr(Instr):
+    """
+    The `br` instruction
+    
+    Instance variable:
+    
+      dest: int             destination block to which the code will branch
+                              (0 = current block, 1 = the block one down, etc)
+    
+    """
+    def __init__(opcode: bytes, pop: int, push: int):
+        super().__init__(opcode, pop, push)
+        self.dest = None
+    
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
+        
+        if f.cur_blk.L0:
+            if f.L0_end_OK:
+                self.dest = 0
+            else:
+                return False
+        else:
+            self.dest = random.randrange(len(f.cur_blk.blocks))
+        
+        if f.creative_OK and self.dest == 0:
+            return Function.end_instr(f)
+        
+        if f.last_instr.stack_after < f.cur_blk.blocks[-1 - self.dest].br_targ:
+            return False
+        
+        cp = copy(self)
+        cp.imm = uLEB128(self.dest)
+        cp.stack_after = f.cur_blk.targ       # preparation for a forced `end`
+        
+        f.cur_blk.content.append(cp)
+        f.last_instr = cp
+        
+        Function.end_instr.append_to(f)       # force an `end` instruction
+        return True
+
+
+class BranchIfInstr(Instr):
+    """
+    The `br_if` instruction
+    
+    Instance variable:
+    
+      dest: int             destination block to which the code will branch
+                              (0 = current block, 1 = the block one down, etc)
+    
+    """
+    def __init__(opcode: bytes, pop: int, push: int):
+        super().__init__(opcode, pop, push)
+        self.dest = None
+    
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
+        
+        self.dest = random.randrange(len(f.cur_blk.blocks))
+        br_targ = f.cur_blk.blocks[-1 - self.dest].br_targ
+        if f.last_instr.stack_after - self.pop < br_targ:
+            return False
+        
+        cp = copy(self)
+        cp.imm = uLEB128(self.dest)
+        cp.stack_after = f.last_instr.stack_after - self.pop
+        
+        f.cur_blk.content.append(cp)
+        f.last_instr = cp
+        return True
+
+
+class ReturnInstr(Instr):
+    """The `return` instruction"""
+    """
+            # return
+            lambda code: code.add_op(0, 0, b'\x0f', 'return'),
             
-            targ = 1 if self.imm == b'\x7f' else 0
-            br_targ = 0 if instr_type == 'loop' else targ
-            if_block = (instr_type == 'if')
-            need_else = (if_block and targ > 0)
-            new_blk = CodeBlock(targ, br_targ, if_block, need_else, blk)
-            new_blk.content.append(self)
-            return (True, new_blk)    
+        elif op == 'return':
+            # 1st line: we'll probably issue an 'end' as well, but
+            #           "no level 0 'end' until we're closing_down"
+            # 2nd line: will be needed if/when the function has br_targ>0
+            if (self.closing_down or len(self.SP) > 1) \
+                    and cur_SP.cur >= self.SP[0].br_targ:
+                self.b += b
+                self._force_block_end()
+        
+        # NB do this bit after `br` and `return` - flush the stack
+        cur_SP.cur = cur_SP.targ
+    """
+    pass
 
-        imm     class of instruction immediate
-        spec    code for instructions that require special handling
-        targ    stack target for new blocks (used by 'block', 'loop' and 'if')
-        dest    destination for branch instructions (used by 'br' and 'br_if')
 
-                 imm: str = None,
-                 spec: str = None,
-                 targ: int = None,
-                 dest: int = None):
-"""
+class CallInstr(Instr):
+    """
+            # call x=0 (i.e. a recursive call to itself)
+            lambda code: code.add_op(0, 0, b'\x10\x00'),
+    """
+    pass
 
-@dataclass
+
+class MemInstr(Instr):
+    """
+            # i32.load8_u - HARDCODED POOR ALIGN (0x00)
+            lambda code: code.add_op(1, 1,
+                b'\x2d\x00' + uLEB128(rnd_i32_0s1s())),
+            
+            # i32.store - HARDCODED POOR ALIGN (0x00)
+            lambda code: code.add_op(2, 0,
+                b'\x36\x00' + uLEB128(rnd_i32_0s1s())),
+            
+            # i32.store8 - HARDCODED POOR ALIGN (0x00)
+            lambda code: code.add_op(2, 0,
+                b'\x3a\x00' + uLEB128(rnd_i32_0s1s())),
+    """
+    pass
+
+
+class VarInstr(Instr):
+    """The `local.get`, `local.set` and `local.tee` instructions"""
+    """
+            # local.get x - HARDCODED 4 LOCALS
+            lambda code: code.add_op(0, 1,
+                b'\x20' + uLEB128(random.randrange(0x04))),
+            
+            # local.set x - HARDCODED 4 LOCALS
+            lambda code: code.add_op(1, 0,
+                b'\x21' + uLEB128(random.randrange(0x04))),
+            
+            # local.tee x - HARDCODED 4 LOCALS
+            lambda code: code.add_op(1, 1,
+                b'\x22' + uLEB128(random.randrange(0x04))),
+    """
+    pass
+
+
+class ConstInstr(Instr):
+    """The `i32.const` instruction"""
+    """
+            # i32.const
+            # XXX TODO: weirdly this only seems to work up to 31 bits?!?
+            lambda code: code.add_op(0, 1, b'\x41' + uLEB128(rnd_i32_0s1s())),
+    """
+    pass
+
+
 class CodeBlock(Instr):
     """
     A block of WebAssembly code
     
-    Behaves like a pseudo-instruction: opcode and imm are None, but 
-    the rest of the variables are defined and used
+    Behaves like a pseudo-instruction: opcode and imm are None, but the rest
+    of the variables (pop, push, stack_after) are defined and used
     
+    Instance variables:
+      targ: int             target number of operands on the stack
+                              (`end` only emitted when stack size == targ)
+      br_targ: int          target for `br`s branching down to this block
+                              (=targ except for `loop`, where br_targ=0)
+      if_block: bool        is this an `if` block?
+                              (an `else` can only be issued within an if block)
+      need_else: bool       is this an `if` block that needs an `else`?
+                              (blocks with targ>0 must have an `else`)
+      else_index: int       index of the `else` instruction within content,
+                              None => not issued yet
+      content: list         instructions (and other blocks) within this block
+      blocks: list          list of blocks inside which this block is nested
+                              (needed for `br`; includes self at the end)
+      L0: bool              is this the Level 0 (=function level) block?
+      
     """
-    
-    targ: int                # target number of operands on the stack
-                             # (`end` only emitted when stack size == targ)
-    br_targ: int             # target for `br`s branching down to this block
-                             # (=targ except for `loop`, where br_targ=0)
-    if_block: bool           # is this an `if` block?
-                             # (an `else` can only be issued within an if block)
-    need_else: bool          # is this an `if` block that needs an `else`?
-                             # (targ>0 blocks must have an `else` part)
-    else_index: int = None   # index of the `else` instruction within content
-    content: list = None     # instructions and other blocks inside this block
-    parents: list = None     # list of blocks inside which this block is nested
-                             # (needed for `br`; None => this block is Level 0)
-    stack_after: int = None
-    
-    def __init__(self, targ: int, br_targ: int, if_block: bool, need_else: bool,
-                 parent: 'CodeBlock' = None, first_instr: int = DummyInstr()):
-        self.targ = targ
-        self.br_targ = br_targ
-        self.if_block = if_block
-        self.need_else = need_else
+    def __init__(self, instr0: 'Instr', parent: 'CodeBlock',
+                 targ: int = None):
+        """
+        Two ways of calling this constructor:
         
+        1. Level 0 block:
+        
+           CodeBlock(instr0=FnStart(), parent=None, targ=fn_targ)
+        
+        2. all other blocks:
+        
+           CodeBlock(instr0=BlockInstr(...), parent)
+        
+        Anything else will result in an error!
+        
+        """
         if parent is None:
-            self.parents = []
+            # no parent, we're at Level 0
+            assert type(instr0) is FnStart
+            assert targ is not None
+            
+            super().__init__(opcode=None, pop=0, push=targ)
+            
+            self.targ = targ
+            self.br_targ = targ
+            self.if_block = False
+            self.need_else = False
+            
+            self.blocks = [self]
+            self.L0 = True
         else:
-            self.parents = copy(parent.parents)
-            self.parents.append(parent)
+            # have parent, we're at Level > 0
+            assert type(instr0) is BlockInstr
+            assert targ is None
+            
+            assert instr0.return_type in ('empty', 'i32')
+            targ = 1 if instr0.return_type == 'i32' else 0
+            
+            super().__init__(opcode=None, pop=instr0.pop, push=targ)
+            
+            self.targ = targ
+            self.br_targ = 0 if instr0.block_type == 'loop' else targ
+            self.if_block = (instr0.block_type == 'if')
+            self.need_else = (self.if_block and self.targ > 0)
+            
+            self.blocks = parent.blocks + [self]
+            self.L0 = False
         
-        self.content = [first_instr]
-    
+        self.else_index = None
+        self.content = [instr0]
+     
     def to_bytes(self):
-        return b''.join([i.to_bytes() for i in self.content])
-    
-    def append(self, blk: 'CodeBlock', c: 'Code') -> (bool, 'CodeBlock'):
-        raise 
-    
+        return b''.join([instr.to_bytes() for instr in self.content])
 
 
-class Code:
+class Function:
     """
-    - Generate random codes that pass WebAssembly validation
+    - Generate random functions that pass WebAssembly validation
     
-    - Parse existing codes and mutate them
+    - Parse existing functions and mutate them
     
     Used by the `-gen0` and `-mutate` options in main() in `evolver.py`
     
     For background information see the 'Reduced Instruction Set' section
     in `TECHNICAL_DETAILS.md` XXX TODO
-    """
     
-    else_instr = ElseInstr(0, 0, b'\x05')
-    end_instr = EndInstr(0, 0, b'\x05')
-    RIS = ()
+    Instance variables:
     
-    def __init__(self):
-        self.closing_down = False
-    
-    
-    
-    # `else_fn` and `end_fn` are needed outside of RIS_opcodes,
-    # so need named functions
-    def else_fn(code):
-        return code.add_op(0, 0, b'\x05', 'else')
-    
-    def end_fn(code):
-        return code.add_op(0, 0, b'\x0b', 'end')
+      L0_blk: 'CodeBlock'   the Level 0 block (a.k.a. root or function level)
+      last_instr: 'Instr'   last instruction that was appended
+      cur_blk: 'CodeBlock'  block to which the next instruction will be added
+                              (None = the function has been completed)
+      
+      new_blks_OK: bool     OK to start new blocks?
+      L0_end_OK: bool       OK to issue the final function `end` (at Level 0)?
+      creative_OK: bool     OK to creatively add/substitute instructions?
+                              (e.g. `end` -> `else` in an `if` block that needs
+                               an `else`, or `end` after a `br`)
     
     """
-    In terms of stack operands (pop-push):
+    
+    
+    def __init__(self, targ: int):
+        self.L0_blk = CodeBlock(instr0=FunStart(), parent=None, targ=targ)
+        self.last_instr = self.L0_blk.content[-1]
+        self.cur_blk = self.L0_blk
+        
+        self.new_blks_OK = True
+        self.L0_end_OK = True
+    
+    def parse(self, code: bytes):
+        pass
+    
+    
+    #################
+    
+    # `else` and `end` need to be called directly when creative_OK is set, 
+    # so need named variables outside of RIS_xxx
+    else_instr = ElseInstr(opcode=b'\x05', pop=0, push=0)
+    end_instr = EndInstr(opcode=b'\x05', pop=0, push=0)
+    
+    # ((weight0, [instr00, instr01, ...]),
+    #  (weight1, [instr10, instr11, ...]), ...)
+    RIS_source = ( ()
+    
+
+    """
+    In terms of stack operands (pop - push):
     
       sources +1: local.get i32.const
       
@@ -293,8 +486,10 @@ class Code:
       
               -2: select  i32.store  i32.store8
       
-      weighted sum of sources = +2
+      weighted sum of sources =  +2
       weighted sum of sinks   = -29
+      
+      [where (weighted sum) = (pop - push)*(sum of RIS weights) ]
     
     So ideally would want each source x14.5 to balance things out, but then the
     control instructions etc get swamped by random arithmetic ones. So let's
@@ -302,7 +497,7 @@ class Code:
     instructions (except local.get) x2 to compensate a bit. Amping up the
     control and memory instructions increases the weighted sum of sinks to:
     
-      -1*(2*5 + 1*18) - 2*(2*3) = -40
+      (-1)*(2*5 + 1*18) + (-2)*(2*3) = -40
     
     so let's pick x16 for the sources so the final balance is +32 vs -40.
     """
