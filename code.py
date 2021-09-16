@@ -26,17 +26,14 @@ def rnd_i32_0s1s() -> int:
     
     The probabilities sum up to 1 (well almost, NB not an infinite sequence!).
     
-    Inverse transform sampling might be quicker for the 1st step, ought to
-    implement both and compare speeds - see the 2nd example in:
+    NOTE: Inverse transform sampling might be quicker for the 1st step (inner 
+    call to random.choices()), ought to implement both and compare speeds, see 
+    the 2nd example in:
     
     https://en.wikipedia.org/wiki/Inverse_transform_sampling#Examples
     """
     return random.getrandbits(random.choices(_a, weights=_w, k=1)[0])
 
-
-### TODO ###
-### no imm in Instr, derive InstrImm that has a uLEB128 immediate + numerical 
-### value for it - imm_b, imm_i ... will simplify parsing later on
 
 class Instr:
     """
@@ -52,38 +49,36 @@ class Instr:
     
     2. When append_to() is called on these Instr objects, it creates a copy of 
        itself, completes the initialisation *of the copy* and then appends
-       it to the CodeBlock
+       it to the current CodeBlock
     
     Instance variables:
     
       opcode: bytes         binary opcode
+      imm: bytes            binary immediate(s)
       pop: int              number of params popped from the operand stack
       push: int             number of results pushed onto the operand stack
-      imm: bytes            binary immediate
       stack_after: int      number of operands on the stack after this instr
     
     """
     def __init__(opcode: bytes, pop: int, push: int):
         self.opcode = opcode
+        self.imm = None
         self.pop = pop
         self.push = push
-        
-        self.imm = None
         self.stack_after = None
-
-    def to_bytes(self):
-        if self.imm is not None:
-            return self.opcode + self.imm
-        else:
-            return self.opcode
     
+    def to_bytes(self):
+        return self.opcode + self.imm
+        
     def append_to(self, f: 'Function') -> bool:
         """returns True if an instruction was appended, False otherwise"""
         
         if f.last_instr.stack_after < self.pop:
-            return False
+            if not f.cur_blk.any_OK:
+                return False
         
         cp = copy(self)
+        cp.imm = b''
         cp.stack_after = f.last_instr.stack_after - self.pop + self.push
         f.cur_blk.content.append(cp)
         f.last_instr = cp
@@ -96,11 +91,11 @@ class FnStart(Instr):
     
     Instr.append_to() assumes that there is a last_instr. All blocks begin with 
     the block instruction (`block` | `loop` | `if`), but that leaves the 
-    function-level block - which is where we insert this dummy.
-    
+    function-level block, which is where we insert this dummy.
     """ 
     def __init__(self, targ: int):
         super().__init__(opcode=b'', pop=0, push=0)
+        self.imm = b''
         self.stack_after = 0
 
 
@@ -116,21 +111,24 @@ class BlockInstr(Instr):
     """
     def __init__(self, opcode: bytes, pop: int, push: int, block_type: str):
         super().__init__(opcode, pop, push)
+        assert block_type in ('block', 'loop', 'if')
         self.block_type = block_type
         self.return_type = None
-     
+    
     def append_to(self, f: 'Function') -> bool:
         """returns True if an instruction was appended, False otherwise"""
         
-        if not f.new_blks_OK or f.last_instr.stack_after < self.pop:
+        if not f.new_blks_OK:
             return False
         
-        cp = copy(self)
-        cp.stack_after = 0
+        if f.last_instr.stack_after < self.pop:
+            if not f.cur_blk.any_OK:
+                return False
         
-        # block type: 0x40 = empty, 0x7f = i32
+        cp = copy(self)
         cp.imm = random.choice((b'\x40', b'\x7f'))
         cp.return_type = 'empty' if cp.imm == b'\x40' else 'i32'
+        cp.stack_after = 0
         
         new_blk = CodeBlock(instr0=cp, parent=f.cur_blk)
         f.cur_blk.content.append(new_blk)
@@ -149,9 +147,11 @@ class ElseInstr(Instr):
             return False
         
         if f.last_instr.stack_after != f.cur_blk.targ:
-            return False
+            if not f.cur_blk.any_OK:
+                return False
         
         cp = copy(self)
+        cp.imm = b''
         cp.stack_after = 0
         f.cur_blk.need_else = False
         f.cur_blk.else_index = len(f.cur_blk.content)
@@ -166,10 +166,11 @@ class EndInstr(Instr):
     def append_to(self, f: 'Function') -> bool:
         """returns True if an instruction was appended, False otherwise"""
         
-        if f.cur_blk.L0 and not f.L0_end_OK:
-            return False
-        
         if f.last_instr.stack_after != f.cur_blk.targ:
+            if not f.cur_blk.any_OK:
+                return False
+        
+        if f.cur_blk.L0 and not f.L0_end_OK:
             return False
         
         # `if` blocks with targ>0 need an `else`, otherwise we'd get an error
@@ -180,6 +181,7 @@ class EndInstr(Instr):
                 return False
         
         cp = copy(self)
+        cp.imm = b''
         cp.stack_after = f.last_instr.stack_after
         f.cur_blk.content.append(cp)
         
@@ -195,79 +197,64 @@ class EndInstr(Instr):
 
 class BranchInstr(Instr):
     """
-    The `br` instruction
+    The `br` and `br_if` instructions
     
     Instance variable:
     
+      branch_type: str      'br' | 'br_if'
       dest: int             destination block to which the code will branch
                               (0 = current block, 1 = the block one down, etc)
-    
     """
-    def __init__(opcode: bytes, pop: int, push: int):
+    def __init__(opcode: bytes, pop: int, push: int, branch_type: str):
         super().__init__(opcode, pop, push)
+        assert branch_type in ('br', 'br_if')
+        self.branch_type = branch_type
         self.dest = None
+    
+    def set_imm(self, f: 'Function') -> bool:
     
     def append_to(self, f: 'Function') -> bool:
         """returns True if an instruction was appended, False otherwise"""
         
-        if f.cur_blk.L0:
-            if f.L0_end_OK:
-                self.dest = 0
-            else:
+        if self.branch_type == 'br':
+            if f.cur_blk.L0 and not f.L0_end_OK:
                 return False
-        else:
-            self.dest = random.randrange(len(f.cur_blk.blocks))
         
-        if f.creative_OK and self.dest == 0:
-            return Function.end_instr(f)
-        
-        if f.last_instr.stack_after < f.cur_blk.blocks[-1 - self.dest].br_targ:
-            return False
-        
-        cp = copy(self)
-        cp.imm = uLEB128(self.dest)
-        cp.stack_after = f.cur_blk.targ       # preparation for a forced `end`
-        
-        f.cur_blk.content.append(cp)
-        f.last_instr = cp
-        
-        Function.end_instr.append_to(f)       # force an `end` instruction
-        return True
-
-
-class BranchIfInstr(Instr):
-    """
-    The `br_if` instruction
-    
-    Instance variable:
-    
-      dest: int             destination block to which the code will branch
-                              (0 = current block, 1 = the block one down, etc)
-    
-    """
-    def __init__(opcode: bytes, pop: int, push: int):
-        super().__init__(opcode, pop, push)
-        self.dest = None
-    
-    def append_to(self, f: 'Function') -> bool:
-        """returns True if an instruction was appended, False otherwise"""
-        
-        self.dest = random.randrange(len(f.cur_blk.blocks))
-        br_targ = f.cur_blk.blocks[-1 - self.dest].br_targ
+        dest = random.randrange(len(f.cur_blk.blocks))
+        br_targ = f.cur_blk.blocks[-1 - dest].br_targ
         if f.last_instr.stack_after - self.pop < br_targ:
-            return False
+            if not f.cur_blk.any_OK:
+                return False
         
         cp = copy(self)
-        cp.imm = uLEB128(self.dest)
-        cp.stack_after = f.last_instr.stack_after - self.pop
-        
+        cp.dest = dest
+        cp.imm = uLEB128(dest)
+        cp.stack_after = f.last_instr.stack_after - self.pop + self.push
         f.cur_blk.content.append(cp)
         f.last_instr = cp
+        
+        if self.branch_type == 'br':
+            f.cur_blk.any_OK = True
+            
+            if f.creative_OK:
+                Function.end_instr.append_to(f)   # add an `end` instruction
+        
         return True
 
 
 class ReturnInstr(Instr):
     """The `return` instruction"""
+    
+    def append_to(self, f: 'Function') -> bool:
+        """returns True if an instruction was appended, False otherwise"""
+        
+        if f.cur_blk.L0 and not f.L0_end_OK:
+            return False
+        
+        if f.last_instr.stack_after < f.cur_blk.blocks[0].targ:
+            return False
+        
+        
     """
             # return
             lambda code: code.add_op(0, 0, b'\x0f', 'return'),
@@ -276,7 +263,7 @@ class ReturnInstr(Instr):
             # 1st line: we'll probably issue an 'end' as well, but
             #           "no level 0 'end' until we're closing_down"
             # 2nd line: will be needed if/when the function has br_targ>0
-            if (self.closing_down or len(self.SP) > 1) \
+            if (self.closing_down or len(self.SP) > 1) \       ###
                     and cur_SP.cur >= self.SP[0].br_targ:
                 self.b += b
                 self._force_block_end()
@@ -361,7 +348,9 @@ class CodeBlock(Instr):
       content: list         instructions (and other blocks) within this block
       blocks: list          list of blocks inside which this block is nested
                               (needed for `br`; includes self at the end)
-      L0: bool              is this the Level 0 (=function level) block?
+      L0: bool              is this the Level 0 (function level) block?
+                              (saves doing len(blocks)==1)
+      any_OK: bool          after a `br` or a `return`, any instruction is OK
       
     """
     def __init__(self, instr0: 'Instr', parent: 'CodeBlock',
@@ -369,7 +358,7 @@ class CodeBlock(Instr):
         """
         Two ways of calling this constructor:
         
-        1. Level 0 block:
+        1. Level 0 block (function level):
         
            CodeBlock(instr0=FnStart(), parent=None, targ=fn_targ)
         
@@ -381,7 +370,7 @@ class CodeBlock(Instr):
         
         """
         if parent is None:
-            # no parent, we're at Level 0
+            # no parent, we're at Level 0 (function level)
             assert type(instr0) is FnStart
             assert targ is not None
             
@@ -414,6 +403,7 @@ class CodeBlock(Instr):
         
         self.else_index = None
         self.content = [instr0]
+        self.any_OK = False
      
     def to_bytes(self):
         return b''.join([instr.to_bytes() for instr in self.content])
@@ -432,7 +422,7 @@ class Function:
     
     Instance variables:
     
-      L0_blk: 'CodeBlock'   the Level 0 block (a.k.a. root or function level)
+      L0_blk: 'CodeBlock'   the Level 0 block (at function level)
       last_instr: 'Instr'   last instruction that was appended
       cur_blk: 'CodeBlock'  block to which the next instruction will be added
                               (None = the function has been completed)
