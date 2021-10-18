@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-import code
+import codelang
+import util
 import config
 
 from hexdump import hexdump
@@ -30,40 +31,6 @@ EOF = b'\x00' * EOF_LEN
 
 # set to True by SIGINT_handler() (called when the user presses Ctrl-C)
 STOPPING = False
-
-
-def uLEB128(val: int) -> bytes:
-    """unsigned Little Endian Base 128 compression for integers"""
-    
-    if val == 0:
-        return b'\x00'
-    elif val < 0:
-        raise ValueError('ERROR: val < 0')
-    else:
-        out = b''
-        
-        while val > 0:
-            cur = val & 0x7f
-            val = val >> 7
-            
-            if val > 0:
-                cur |= 0x80
-            
-            out += cur.to_bytes(1, 'little')
-        
-        return out
-
-
-def size(b: bytes) -> bytes:
-    return uLEB128(len(b)) + b
-
-
-def rnd_int(n_bytes: int) -> int:
-    return random.getrandbits(8 * n_bytes)
-
-
-def rnd_bytes(n_bytes: int) -> bytes:
-    return random.getrandbits(8 * n_bytes).to_bytes(n_bytes, 'big')
 
 
 def i32_load(mem: Memory, addr: int) -> int:
@@ -213,7 +180,7 @@ class Codeling:
            0x01 (1 locals entry: ) 0x10 (declare 16 locals of ) 0x7f (type i32)
         """
         return self.cfg.template[:0x23] \
-            + size(b'\x01' + size(b'\x01\x10\x7f' + self.b())) \
+            + util.size(b'\x01' + util.size(b'\x01\x10\x7f' + self.b())) \
             + self.cfg.template[0x36:]
     
     def write_wasm(self, wasm_bytes: bytes, outdir: str) -> str:
@@ -296,15 +263,17 @@ class Codeling:
         
         return bytes(self.mem.data_ptr[self.out_addr: self.mem.data_len])
     
-    def gen0(self, ID: str, n_bytes: int) -> None:
+    def gen0(self, ID: str, n_instr: int) -> None:
         while True:
-            c = code.Code(n_bytes)
-            if len(c.b) <= 4 * n_bytes:
+            f = codelang.Function(targ=0)
+            f.generate(n_instr)
+            b = f.to_bytes()
+            if len(b) <= 8 * n_instr:
                 break
         
         self.json = {
             'ID': ID,
-            'code': c.b.hex(),
+            'code': b.hex(),
             'created': nice_now_UTC(),
             'parents': [],
             'created_by': self.cfg.this_script_release + ' Codeling.gen0()'}
@@ -429,9 +398,16 @@ class Codeling:
                 self.read_wasm(wasm_fname)
         except WasmtimeError as e:
             t_score = time.time()
+            
+            if in_memory:
+                old_ID = self.json['ID']
+                self.json['ID'] = 'VALERR-' + old_ID
+                self.write_wasm(wasm_bytes, self.cfg.outdir)
+                self.json['ID'] = old_ID
+            
             res = sns(ID=self.json['ID'], score=-0x80,
                       desc='VALIDATION ERROR\n' + comment(str(e)),
-                      t_run=0.0)
+                      t_run=0.0, fuel=0)
         else:
             # scoring (includes running)
             t_score = time.time()
@@ -487,12 +463,13 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
     
     n_scored, n_accepted = 0, 0
     n_scored_prev, t_prev = 0, t_start
+    
     with multiprocessing.Pool(cfg.nproc, init_pool_worker) as p:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        # for r in map(score_Codeling, cdl_gtor()):
-        for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
+        for r in map(score_Codeling, cdl_gtor()):
+        #for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -622,7 +599,7 @@ def main():
         """
     
     defaults = (
-        ('length', 7),
+        ('length', 5),
         ('fuel', 50),
         ('fn', 'v02'),
         ('thresh', None),
@@ -702,7 +679,7 @@ def main():
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that generate new codelings, set the length 
         (-rnd0) or minimum length (-gen0, -mutate) of new sequences or 
-        insertions to L bytes. (Default: {cfg.length})""")
+        insertions to L instructions. (Default: {cfg.length})""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
