@@ -398,13 +398,6 @@ class Codeling:
                 self.read_wasm(wasm_fname)
         except WasmtimeError as e:
             t_score = time.time()
-            
-            if in_memory:
-                old_ID = self.json['ID']
-                self.json['ID'] = 'VALERR-' + old_ID
-                self.write_wasm(wasm_bytes, self.cfg.outdir)
-                self.json['ID'] = old_ID
-            
             res = sns(ID=self.json['ID'], score=-0x80,
                       desc='VALIDATION ERROR\n' + comment(str(e)),
                       t_run=0.0, fuel=0)
@@ -468,8 +461,8 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(score_Codeling, cdl_gtor()):
-        #for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
+        #for r in map(score_Codeling, cdl_gtor()):
+        for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1

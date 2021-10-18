@@ -37,6 +37,7 @@ class Instr:
         return self.opcode
     
     def _append_OK(self, f: 'Function') -> bool:
+        #print(f.last_instr.to_bytes().hex())
         return self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK
     
     def _update_stack(self, f: 'Function'):
@@ -160,6 +161,7 @@ class ElseInstr(Instr):
         f._append_instr(self)
         f.cur_blk.need_else = False
         f.cur_blk.else_index = len(f.cur_blk.content) - 1
+        f.cur_blk.any_OK = False
 
 
 class EndInstr(Instr):
@@ -548,6 +550,7 @@ class Function:
     
     def _new_blk(self, instr0: 'Instr'):
         new_blk = CodeBlock(instr0=instr0, parent=self.cur_blk)
+        self.cur_blk.content.append(new_blk)
         new_blk._update_stack(self)
         self.cur_blk = new_blk
         self.last_instr = instr0
@@ -565,7 +568,7 @@ class Function:
         instr = random.choices(self.RIS_instrs, weights=self.RIS_weights)[0]
         if instr.append_to(self):
             self.n_instr += 1
-
+    
     def generate(self, n_instr: int):
         self.new_blks_OK = True
         self.L0_end_OK = False
@@ -577,7 +580,7 @@ class Function:
         self.L0_end_OK = True
         while self.cur_blk is not None:
             self._generate_instr()
-   
+    
     def to_bytes(self) -> bytes:
         if self.cur_blk is None: 
             return self.L0_blk.to_bytes()
