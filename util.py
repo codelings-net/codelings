@@ -2,8 +2,37 @@
 
 import random
 
+class ByteStream:
+    def __init__(self, b: bytes):
+        self.ba = bytearray(b)
+        self.ba_ptr = 0
+    
+    def done(self) -> bool:
+        return len(self.ba) <= self.ba_ptr
+    
+    def next_int(self) -> int:
+        i = self.ba[self.ba_ptr]
+        self.ba_ptr += 1
+        return i
+    
+    def next_b(self) -> bytes:
+        return self.next_int().to_bytes(1, 'little')
+    
+    def next_uLEB128(self) -> int:
+        """unsigned Little Endian Base 128 compression for integers, decoder"""
+        
+        val = 0
+        n = 0
+        while True:
+            i = self.next_int()
+            val += (i & 0x7f) << (7*n)
+            n += 1
+            
+            if i < 0x80:
+                return val
+
 def uLEB128(val: int) -> bytes:
-    """unsigned Little Endian Base 128 compression for integers"""
+    """unsigned Little Endian Base 128 compression for integers, encoder"""
     
     if val == 0:
         return b'\x00'

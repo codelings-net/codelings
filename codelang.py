@@ -33,11 +33,11 @@ class Instr:
         self.push = push
         self.stack_after = None
     
-    def to_bytes(self):
+    def b(self):
         return self.opcode
     
     def _append_OK(self, f: 'Function') -> bool:
-        #print(f.last_instr.to_bytes().hex())
+        #print(f.last_instr.b().hex())
         return self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK
     
     def _update_stack(self, f: 'Function'):
@@ -74,7 +74,7 @@ class InstrWithImm(Instr):
         super().__init__(opcode, pop, push)
         self.imm = None
     
-    def to_bytes(self):
+    def b(self):
         return self.opcode + self.imm
     
     def _get_imm(self, f: 'Function') -> bool:
@@ -139,7 +139,13 @@ class BlockInstr(InstrWithImm):
         self.stack_after = 0
     
     def _get_imm(self, f: 'Function') -> bool:
-        self.imm = random.choice((b'\x40', b'\x7f'))
+        options = (b'\x40', b'\x7f')
+        if f.bs is None:
+            self.imm = random.choice(options)
+        else:
+            self.imm = f.bs.next_b()
+            assert self.imm in options
+            
         self.return_type = 'empty' if self.imm == b'\x40' else 'i32'
         return True
     
@@ -217,7 +223,12 @@ class BranchInstr(InstrWithImm):
         return self.branch_type != 'br' or not f.cur_blk.L0 or f.L0_end_OK
     
     def _get_imm(self, f: 'Function') -> bool:
-        dest = random.randrange(len(f.cur_blk.blocks))
+        if f.bs is None:
+            dest = random.randrange(len(f.cur_blk.blocks))
+        else:
+            dest = f.bs.next_uLEB128()
+            assert dest < len(f.cur_blk.blocks)
+        
         br_targ = f.cur_blk.blocks[-1 - dest].br_targ
         if f.last_instr.stack_after - self.pop < br_targ:
             if not f.cur_blk.any_OK:
@@ -270,13 +281,19 @@ class CallInstr(InstrWithImm):
     def _get_imm(self, f: 'Function') -> bool:
         # XXX TODO
         # we are assuming only one function with zero params and zero results
-        # and are hard-coding a call to this function
+        # and are hard-coding a call to this function (=function no. 0)
         # i.e. a recursive call to itself
-        #
-        # zero params = always passes validation
+        fnID = b'\x00'
+        if f.bs is None:
+            self.imm = fnID
+        else:
+            self.imm = f.bs.next_b()
+            assert self.imm == fnID
+        
         self.pop = 0
         self.push = 0
-        self.imm = b'\x00'
+        
+        # zero params = always passes validation
         return True
 
 
@@ -286,9 +303,16 @@ class MemInstr(InstrWithImm):
         `i32.load`, `i32.load8_u`, `i32.store`, `i32.store8`
     """
     def _get_imm(self, f: 'Function') -> bool:
-        # hard-coded poor align (0x00)
-        # mostly small random offset (mostly 0x00 and 0x01)
-        self.imm = b'\x00' + util.uLEB128(util.rnd_i32_0s1s())
+        if f.bs is None:
+            # hard-coded poor align
+            # mostly small random offset (mostly 0x00 and 0x01)
+            align = 0x00
+            offset = util.rnd_i32_0s1s()
+        else:
+            align = f.bs.next_uLEB128()
+            offset = f.bs.next_uLEB128()
+        
+        self.imm = util.uLEB128(align) + util.uLEB128(offset)
         return True
 
 
@@ -297,10 +321,16 @@ class VarInstr(InstrWithImm):
     Instructions dealing with local (and eventually global as well) variables: 
         `local.get`, `local.set` and `local.tee`
     """
-    
     def _get_imm(self, f: 'Function') -> bool:
         # XXX TODO: hard-coded 4 locals
-        self.imm = util.uLEB128(random.randrange(0x04))
+        n_var = 4
+        if f.bs is None:
+            varID = random.randrange(n_var)
+        else:
+            varID = f.bs.next_uLEB128()
+            assert varID <= n_var
+        
+        self.imm = util.uLEB128(varID)
         return True
 
 
@@ -308,8 +338,13 @@ class ConstInstr(InstrWithImm):
     """The `i32.const` instruction"""
     
     def _get_imm(self, f: 'Function') -> bool:
+        if f.bs is None:
+            val = util.rnd_i32_0s1s()
+        else:
+            val = f.bs.next_uLEB128()
+        
         # XXX TODO: weirdly this only seems to work up to 31 bits?!?
-        self.imm = util.uLEB128(util.rnd_i32_0s1s())
+        self.imm = util.uLEB128(val)
         return True
 
 
@@ -319,7 +354,7 @@ class CodeBlock(Instr):
     
     Behaves like a pseudo-instruction: opcode is None, but the rest of the 
     variables (i.e. pop, push, stack_after) are defined and used, as are
-    to_bytes() and append_to()
+    b() and append_to()
     
     Instance variables:
       targ: int             target number of operands on the stack
@@ -370,6 +405,7 @@ class CodeBlock(Instr):
         else:
             # have parent, we're at Level > 0
             assert type(instr0) is BlockInstr
+            assert type(parent) is CodeBlock
             assert targ is None
             
             assert instr0.return_type in ('empty', 'i32')
@@ -388,8 +424,8 @@ class CodeBlock(Instr):
         self.content = [instr0]
         self.any_OK = False
      
-    def to_bytes(self):
-        return b''.join([instr.to_bytes() for instr in self.content])
+    def b(self):
+        return b''.join([instr.b() for instr in self.content])
 
 
 class Function:
@@ -415,21 +451,68 @@ class Function:
       creative_OK: bool     OK to creatively add/substitute instructions?
                               (e.g. `end` -> `else` in an `if` block that needs
                                an `else`, or `end` after a `br`)
-      n_instr: int          number of instructions
+      length: int           length in bytes (of Function.b())
+      bs: util.ByteStream   only used for parsing
+    
     """
-    def __init__(self, targ: int):
+    def __init__(self, gen0=None, mutate=None):
+        """
+        Two ways of calling this constructor:
+        
+        1. Generate a new function from scratch ("generation 0"):
+        
+             Function(gen0=(targ, length))
+        
+           where:
+           
+             targ: int          target for the Level 0 block
+                                  (see CodeBlock for details)
+             length: int        minimum length of the new function (in bytes)
+           
+        2. Parse and mutate an existing function:
+        
+             Function(mutate=(old_bytes, targ, method, length))
+           
+           where:
+           
+             old_bytes: bytes   old code to mutate
+             targ: int          target for the Level 0 block
+                                  (see CodeBlock for details)
+             method: str        Function.method() to mutate said code with
+             length: int        length of any indels
+        
+        Anything else will result in an error!
+        """
+        if gen0 is not None:
+            targ, length = gen0
+            assert type(targ) is int
+            assert type(length) is int
+            assert mutate is None
+        elif mutate is not None:
+            old_bytes, targ, method, length = mutate
+            assert type(old_bytes) is bytes
+            assert type(targ) is int
+            assert type(method) is str
+            assert type(length) is int
+            
+            mutator_fn = getattr(self, 'mutator_' + method)
+        else:
+            raise RuntimeError("need either 'gen0' or 'mutate'")
+        
         self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, targ=targ)
         self.last_instr = self.L0_blk.content[-1]
         self.cur_blk = self.L0_blk
         self.new_blks_OK = None
         self.L0_end_OK = None
         self.creative_OK = None
-        self.n_instr = 0
-    
-    # `else` and `end` need to be called directly when creative_OK is set, 
-    # so need named variables outside of RIS_source
-    else_instr = ElseInstr(b'\x05', 0, 0)
-    end_instr = EndInstr(b'\x0b', 0, 0)
+        self.length = 0
+        self.bs = None
+        
+        if gen0 is not None:
+            self.generate(length)
+        elif mutate is not None:
+            self.parse(old_bytes)
+            mutator_fn()
     
     """
     In terms of stack operands (pop - push):
@@ -475,6 +558,11 @@ class Function:
     
     so let's pick 16x for the sources so the final balance is +32 vs -42.
     """
+    # `else` and `end` need to be called directly when creative_OK is set, 
+    # so need named variables outside of RIS_source
+    else_instr = ElseInstr(b'\x05', 0, 0)
+    end_instr = EndInstr(b'\x0b', 0, 0)
+    
     # ( weight0, (instr00, instr01, ...),
     #   weight1, (instr10, instr11, ...), ...)
     RIS = (
@@ -542,7 +630,7 @@ class Function:
     
     RIS_instrs = [i for ins in RIS[1::2] for i in ins]
     RIS_weights = [w for w, ins in zip(RIS[0::2], RIS[1::2]) for i in ins]
-    RIS_opcode2instr = {i.opcode: i for i in RIS_instrs}
+    RIS_opcode2instr = {int.from_bytes(i.opcode, 'big'):i for i in RIS_instrs}
     
     def _append_instr(self, instr: 'Instr'):
         self.cur_blk.content.append(instr)
@@ -567,13 +655,13 @@ class Function:
     def _generate_instr(self):
         instr = random.choices(self.RIS_instrs, weights=self.RIS_weights)[0]
         if instr.append_to(self):
-            self.n_instr += 1
+            self.length += len(instr.b())
     
-    def generate(self, n_instr: int):
+    def generate(self, length: int):
         self.new_blks_OK = True
         self.L0_end_OK = False
         self.creative_OK = True
-        while self.n_instr < n_instr and self.cur_blk is not None:
+        while self.length < length and self.cur_blk is not None:
             self._generate_instr()
         
         self.new_blks_OK = False
@@ -581,11 +669,32 @@ class Function:
         while self.cur_blk is not None:
             self._generate_instr()
     
-    def to_bytes(self) -> bytes:
+    def b(self) -> bytes:
         if self.cur_blk is None: 
-            return self.L0_blk.to_bytes()
+            return self.L0_blk.b()
         else:
             return None
     
-    def parse(self, code: bytes) -> bool:
-        pass
+    def parse(self, code: bytes):
+        print('parse')
+        
+        self.new_blks_OK = True
+        self.L0_end_OK = True
+        self.creative_OK = False
+        self.bs = util.ByteStream(code)
+        
+        while not self.bs.done():
+            opcode = self.bs.next_int()
+            instr = self.RIS_opcode2instr[opcode]
+            print(type(instr))
+            instr.append_to(self)
+        
+        print('sanity check, please remove once done testing')
+        assert self.b() == code
+        
+        self.cur_blk = None
+    
+    def mutator_del(self):
+        """XXX TODO"""
+        
+        print('mutator_del')

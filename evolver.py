@@ -90,6 +90,7 @@ class Codeling:
             wasm_fname: str = None,
             json: dict = None,
             gen0=None,
+            mutate=None,
             deferred=False):
         """
         Deferred Initialisation
@@ -114,32 +115,31 @@ class Codeling:
         config.consume_fuel = True
         self.store = Store(Engine(config))
         
+        # file names we have actually read from or written to (none so far)
+        self._json_fname = None
+        self._wasm_fname = None
+        
+        # ... but save the param we've been passed
         # NB read_wasm() is an important part of scoring (validation step)
         # and takes place at that point
         self._init_wasm_fname = wasm_fname
         
-        self._json_fname = None
-        self._wasm_fname = None
+        if sum(x is not None for x in (json_fname, json, gen0, mutate)) != 1:
+            raise RuntimeError("need exactly one of these params: "
+                "(json_fname, json, gen0, mutate)")
         
         if json_fname is not None:
-            if json_fname.endswith('.json'):
-                self.read_json(json_fname)
-            else:
-                raise RuntimeError("'json_fname' needs to end in '.json'")
+            self.read_json(json_fname)
         elif json is not None:
             self.json = json
         elif gen0 is not None:
-            self.gen0(*gen0)
-        else:
-            raise RuntimeError("need one of ('json_fname', 'json', 'gen0'")
+            self.gen0(ID=gen0)
+        elif mutate is not None:
+            self.mutate(*mutate)
     
     def _deferred_init(self) -> None:
         if self._deferred:
             self.__init__(**self._deferred)
-            self._deferred = None
-    
-    # def gen(self) -> int:
-    #   return int( re.match('^([0-9a-f]{4})-', self.json['ID']).group(1), 16 )
     
     def b(self) -> bytes:
         return bytes.fromhex(self.json['code'])
@@ -156,6 +156,9 @@ class Codeling:
         return fname
 
     def read_json(self, fname: str):
+        if not fname.endswith('.json'):
+            raise RuntimeError("'fname' needs to end in '.json'")
+        
         with open(fname, 'r') as f:
             self.json = json.loads(f.read())
         
@@ -178,6 +181,7 @@ class Codeling:
         The initial bit in the inner size() means:
         
            0x01 (1 locals entry: ) 0x10 (declare 16 locals of ) 0x7f (type i32)
+        
         """
         return self.cfg.template[:0x23] \
             + util.size(b'\x01' + util.size(b'\x01\x10\x7f' + self.b())) \
@@ -207,6 +211,9 @@ class Codeling:
         self._instance = instance
     
     def read_wasm(self, fname: str):
+        if not fname.endswith('.wasm'):
+            raise RuntimeError("'fname' needs to end in '.wasm'")
+        
         self.create_instance(Module.from_file(self.store.engine, fname))
         self._wasm_fname = fname
     
@@ -263,20 +270,29 @@ class Codeling:
         
         return bytes(self.mem.data_ptr[self.out_addr: self.mem.data_len])
     
-    def gen0(self, ID: str, n_instr: int) -> None:
-        while True:
-            f = codelang.Function(targ=0)
-            f.generate(n_instr)
-            b = f.to_bytes()
-            if len(b) <= 8 * n_instr:
-                break
+    def gen0(self, ID: str) -> None:
+        targ = 0
+        f = codelang.Function(gen0=(targ, cfg.length))
         
         self.json = {
             'ID': ID,
-            'code': b.hex(),
+            'code': f.b().hex(),
             'created': nice_now_UTC(),
             'parents': [],
             'created_by': self.cfg.this_script_release + ' Codeling.gen0()'}
+    
+    def mutate(self, ID: str, json_source: str) -> None:
+        source_cdl = Codeling(self.cfg, json_fname=json_source)
+        targ = 0
+        f = codelang.Function(mutate=\
+            (source_cdl.b(), targ, self.cfg.mtfn, self.cfg.length))
+        
+        self.json = {
+            'ID': ID,
+            'code': f.b().hex(),
+            'created': nice_now_UTC(),
+            'parents': [source_cdl.json['ID']],
+            'created_by': self.cfg.this_script_release + ' Codeling.mutate()'}
     
     def concat(self, cdl: 'Codeling', child_ID: str) -> 'Codeling':
         child = {
@@ -404,7 +420,7 @@ class Codeling:
         else:
             # scoring (includes running)
             t_score = time.time()
-            score_fn = getattr(self, 'score_' + self.cfg.fn)
+            score_fn = getattr(self, 'score_' + self.cfg.scfn)
             self.set_rnd()
             self.set_inp(self.b())
             res = score_fn()
@@ -441,7 +457,7 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
     
     print('#', ' '.join(sys.argv))
     print('# Release ' + cfg.release,
-          'Codeling.score_' + cfg.fn + '()',
+          'Codeling.score_' + cfg.scfn + '()',
           f"thresh={cfg.thresh:#x}" if cfg.thresh is not None \
               else 'no threshold',
           sep=', ')
@@ -461,8 +477,8 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        #for r in map(score_Codeling, cdl_gtor()):
-        for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
+        for r in map(score_Codeling, cdl_gtor()):
+        #for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -497,27 +513,37 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
 
 def gtor_alive(cfg: 'Config') -> 'Codeling':
     for json_fname in all_json_fnames(cfg.indir):
-        if STOPPING:
-            print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
-                  file=sys.stderr)
-            break
-        
         yield Codeling(cfg, json_fname=json_fname,
                        wasm_fname=json2wasm(json_fname), deferred=True)
 
 
 def gtor_gen0(cfg: 'Config', N: int) -> 'Codeling':
     for i in range(N):
+        ID = f"{cfg.runid}-{i:012}"
+        yield Codeling(cfg, gen0=ID, deferred=True)
+
+
+def gtor_mutate(cfg: 'Config', N: int) -> 'Codeling':
+    cdl_i = 0
+    for i in range(N):
+        for json_fname in all_json_fnames(cfg.indir):
+            ID = f"{cfg.runid}-{cdl_i:012}"
+            cdl_i += 1
+            yield Codeling(cfg, mutate=(ID, json_fname), deferred=True)
+
+
+def stop_check(cdl_gtor) -> 'Codeling':
+    for cdl in cdl_gtor():
         if STOPPING:
             print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
                   file=sys.stderr)
             break
-        
-        ID = f"{cfg.runid}-{i:012}"
-        yield Codeling(cfg, gen0=(ID, cfg.length), deferred=True)
+        else:
+            yield cdl
 
 
 # TODO XXX uses LastID, needs a rewrite
+# also get rid of old 'if STOPPING'
 def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
     IDs = LastID(write_at_exit=False)
     alive = all_alive_json()
@@ -543,28 +569,46 @@ def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
 
 
 def hack():
-    None
+    pass
 
 
-def list_available_fns():
+def print_item_desc(content):
+    item_w = max([len(item) for item, _ in content])
+    desc_w = shutil.get_terminal_size().columns - item_w - 6
+    
+    for item, desc in content:
+        desc = ' '.join(desc.split())  # get rid of multiple spaces and \n
+        wrapped = textwrap.wrap(desc, width=desc_w)
+        for i, d in zip([item] + [''] * len(wrapped), wrapped):
+            print(f"  {i:{item_w}}  {d}")
+
+
+def list_available_scfns():
     print("Available scoring functions:")
     
     fns = []
     for fn in dir(Codeling):
         m = re.match("score_(.*)", fn)
         if m:
-            code = m.group(1)
+            fn_code = m.group(1)
             doc = getattr(getattr(Codeling, fn), '__doc__')
-            doc = ' '.join(doc.split())  # get rid of multiple spaces and \n
-            fns.append((code, doc))
+            fns.append((fn_code, doc))
     
-    maxL = max([len(code) for code, _ in fns])
-    doc_w = shutil.get_terminal_size().columns - maxL - 6
+    print_item_desc(fns)
+
+
+def list_available_mtfns():
+    print("Available mutator functions:")
     
-    for code, doc in fns:
-        wrapped = textwrap.wrap(doc, width=doc_w)
-        for c, d in zip([code] + [''] * len(wrapped), wrapped):
-            print(f"  {c:{maxL}}  {d}")
+    fns = []
+    for fn in dir(codelang.Function):
+        m = re.match("mutator_(.*)", fn)
+        if m:
+            fn_code = m.group(1)
+            doc = getattr(getattr(codelang.Function, fn), '__doc__')
+            fns.append((fn_code, doc))
+    
+    print_item_desc(fns)
 
 
 def main():
@@ -594,7 +638,8 @@ def main():
     defaults = (
         ('length', 5),
         ('fuel', 50),
-        ('fn', 'v02'),
+        ('scfn', 'v02'),
+        ('mtfn', 'del'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
         ('template_file', 'template.wasm'))
@@ -617,9 +662,13 @@ def main():
     
     # hard-coded to pre-empt checking for required options
     for i in range(2, len(sys.argv)):
-        if sys.argv[i - 1] == '-fn' and sys.argv[i] == 'list':
-            list_available_fns()
-            return
+        if sys.argv[i] == 'list':
+            if sys.argv[i-1] == '-scfn':
+                list_available_scfns()
+                return
+            elif sys.argv[i-1] == '-mtfn':
+                list_available_mtfns()
+                return
     
     def type_int_ish(s: str):
         try:
@@ -632,12 +681,20 @@ def main():
                     f"failed to convert '{s}' to an int, try something like "
                     "'123', '12e3' or '0xf0'.")
     
-    def type_score_fn(s: str):
+    def type_scfn(s: str):
         fn = 'score_' + s
         if hasattr(Codeling, fn):
             return s
         else:
             raise argparse.ArgumentTypeError(f"there is no '{fn}' in Codeling")
+    
+    def type_mtfn(s: str):
+        fn = 'mutator_' + s
+        if hasattr(codelang.Function, fn):
+            return s
+        else:
+            raise argparse.ArgumentTypeError\
+                (f"there is no '{fn}' in codelang.Function")
     
     def type_dir_str(s: str):
         if os.path.isdir(s):
@@ -662,8 +719,8 @@ def main():
         generated in this way will pass the WebAssembly validation step (syntax 
         check).""")
     cmds.add_argument('-mutate', type=type_int_ish, metavar='N',
-        help=f"""Generate N new codelings by mutating the codelings in
-        '{cfg.indir}'.""")
+        help=f"""Generate new codelings by mutating each codeling in
+        '{cfg.indir}' N times.""")
     cmds.add_argument('-concat', type=type_int_ish, metavar='gen',
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
@@ -671,8 +728,8 @@ def main():
     
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that generate new codelings, set the length 
-        (-rnd0) or minimum length (-gen0, -mutate) of new sequences or 
-        insertions to L instructions. (Default: {cfg.length})""")
+        (-rnd0) or minimum length (-gen0, -mutate) of new sequences or indels
+        to L bytes. (Default: {cfg.length})""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
@@ -682,10 +739,15 @@ def main():
         `drop`, `block`, and `loop`, consume 0 units, as any execution cost 
         associated with them involves other instructions which do consume 
         fuel."] (Default: {cfg.fuel})""")
-    parser.add_argument('-fn', type=type_score_fn, metavar='vXX',
+    parser.add_argument('-scfn', type=type_scfn, metavar='name',
         help=f"""Scoring function to use, e.g. 'v02' for 
-        'Codeling.score_v02()'. 'list' lists all scoring functions along with 
-        their descriptions and exits. (Default: '{cfg.fn}')""")
+        'Codeling.score_v02()'. '-scfn list' lists all available scoring
+        functions along with their descriptions. (Default: '{cfg.scfn}')""")
+    parser.add_argument('-mtfn', type=type_mtfn, metavar='name',
+        help=f"""Mutator function to use, e.g. 'del' for 
+        'codelang.Function.mutator_del()'. '-mtfn list' lists all available
+        mutator functions along with their descriptions. (Default:
+        '{cfg.mtfn}')""")
     parser.add_argument('-thresh', type=type_int_ish, metavar='T',
         help=f"""Codelings with score >= T (e.g. '0x5f') are saved to
         '{cfg.outdir}'. For existing codelings (e.g. those taken from
@@ -719,7 +781,8 @@ def main():
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    for param in 'length fuel fn thresh indir outdir nproc runid'.split():
+    l = 'length fuel scfn mtfn thresh indir outdir nproc runid'
+    for param in l.split():
         a = getattr(args, param)
         if a is not None:
             setattr(cfg, param, a)
@@ -734,16 +797,17 @@ def main():
     elif args.gen0 is not None:
         def gtor(): return gtor_gen0(cfg, args.gen0)
     elif args.mutate is not None:
-        gtor = None
-        sys.exit("SORRY, -mutate not implemented yet :-(")
+        def gtor(): return gtor_mutate(cfg, args.mutate)
     elif args.concat is not None:
         def gtor(): return gtor_concat(cfg, args.concat)
+    
+    def stopping_gtor(): return stop_check(gtor)
     
     with open(cfg.template_file, "rb") as f:
         cfg.template = f.read()
     
     signal.signal(signal.SIGINT, SIGINT_handler)
-    score_Codelings(cfg, gtor)
+    score_Codelings(cfg, stopping_gtor)
 
 
 def SIGINT_handler(sig, frame):
