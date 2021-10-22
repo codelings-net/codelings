@@ -724,12 +724,16 @@ def main():
     cmds.add_argument('-concat', type=type_int_ish, metavar='gen',
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
-        X+Y by concatenating their codes.""")
+        X+Y by concatenating their codes. XXX TODO BROKEN""")
     
     parser.add_argument('-length', type=type_int_ish, metavar='L',
-        help=f"""For options that generate new codelings, set the length 
-        (-rnd0) or minimum length (-gen0, -mutate) of new sequences or indels
-        to L bytes. (Default: {cfg.length})""")
+        help=f"""For options that produce new codelings, set the 'length' 
+        parameter to L. This parameter has slightly different meanings 
+        depending on which method for generating or mutating codelings is used: 
+        for -rnd0 it is the length of the new random strings in bytes, for 
+        -gen0 it is the minimum number of instructions in the new codelings, 
+        and finally for -mutate is the minimum number of instructions changed 
+        in the parent to produce the new codelings. (Default: {cfg.length})""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 

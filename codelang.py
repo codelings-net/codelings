@@ -5,7 +5,7 @@ from copy import copy
 
 class Instr:
     """
-    A single instruction within a WebAssembly program
+    A single instruction within a WebAssembly (or CodeLang) program
     
     Used directly for simple instructions without an immediate and as a base 
     class for more complicated instructions
@@ -302,12 +302,13 @@ class CallInstr(InstrWithImm):
 class MemInstr(InstrWithImm):
     """
     Memory instructions:
-        `i32.load`, `i32.load8_u`, `i32.store`, `i32.store8`
+    
+      `i32.load`, `i32.load8_u`, `i32.store`, `i32.store8`
     
     Instance variables:
     
-      align                 see memarg 
-      offset                the memarg.offset immediate
+      align: int            the align part of memarg (see the WebAssembly spec)
+      offset: int           the offset part of memarg (see the WebAssembly spec)
     
     where the alignment (align) is a promise to the VM that:
     
@@ -342,11 +343,12 @@ class MemInstr(InstrWithImm):
 class VarInstr(InstrWithImm):
     """
     Instructions dealing with local (and eventually global as well) variables: 
-        `local.get`, `local.set` and `local.tee`
+    
+      `local.get`, `local.set` and `local.tee`
     
     Instance variable:
     
-      varID                 ID of variable to be operated on
+      varID: int            ID of variable to be operated on
     
     """
     def __init__(self, opcode: bytes, pop: int, push: int):
@@ -376,7 +378,7 @@ class ConstInstr(InstrWithImm):
     
     Instance variable:
     
-      val                   value of the constant
+      val: int              value of the constant
     
     """
     def __init__(self, opcode: bytes, pop: int, push: int):
@@ -500,9 +502,8 @@ class Function:
       creative_OK: bool     OK to creatively add/substitute instructions?
                               (e.g. `end` -> `else` in an `if` block that needs
                                an `else`, or `end` after a `br`)
-      length: int           length in bytes (of Function.b())
+      length: int           length in number of instructions
       bs: util.ByteStream   stream of bytes to parse (only used for parsing)
-      index:                XXX TODO
     
     """
     def __init__(self, gen0=None, mutate=None):
@@ -517,7 +518,8 @@ class Function:
            
              targ: int          target for the Level 0 block
                                   (see CodeBlock for details)
-             length: int        minimum length of the new function (in bytes)
+             length: int        minimum length of the new function
+                                  (length = number of instructions)
            
         2. Parse and mutate an existing function:
         
@@ -528,16 +530,18 @@ class Function:
              old_bytes: bytes   old code to mutate
              targ: int          target for the Level 0 block
                                   (see CodeBlock for details)
-             method: str        Function.method() to mutate said code with
-             length: int        length of any indels
+             method: str        Function.mutator_{method}() to apply
+             length: int        minimum length of any changes
+                                  (length = number of instructions;
+                                   this option is ignored by some methods)
         
         Anything else will result in an error!
         """
         if gen0 is not None:
+            assert mutate is None
             targ, length = gen0
             assert type(targ) is int
             assert type(length) is int
-            assert mutate is None
         elif mutate is not None:
             old_bytes, targ, method, length = mutate
             assert type(old_bytes) is bytes
@@ -563,7 +567,7 @@ class Function:
         elif mutate is not None:
             self.parse(old_bytes)
             
-            ### XXX TODO: What are we going to do if when this returns False,
+            ### XXX TODO: What are we going to do when this (vvv) returns False,
             ### i.e. could not find a mutation that would pass validation?
             mutator_fn(length)
     
@@ -651,7 +655,7 @@ class Function:
             MemInstr(b'\x28', 1, 1),                # i32.load m
             MemInstr(b'\x2d', 1, 1),                # i32.load8_u m
             MemInstr(b'\x36', 2, 0),                # i32.store m
-            MemInstr(b'\x3a', 2, 0),                # i32.store8 m
+            MemInstr(b'\x3a', 2, 0)                 # i32.store8 m
         ),
         
         # the great unwashed (aka artihmetic instructions)
@@ -677,7 +681,7 @@ class Function:
             Instr(b'\x74', 2, 1),                   # i32.shl
             Instr(b'\x76', 2, 1),                   # i32.shr_u
             Instr(b'\x77', 2, 1),                   # i32.rotl
-            Instr(b'\x78', 2, 1),                   # i32.rotr
+            Instr(b'\x78', 2, 1)                    # i32.rotr
         )
     )
     
@@ -708,7 +712,7 @@ class Function:
     def _generate_instr(self):
         instr = random.choices(self.RIS_instrs, weights=self.RIS_weights)[0]
         if instr.append_to(self):
-            self.length += len(instr.b())
+            self.length += 1
     
     def generate(self, length: int):
         self.new_blks_OK = True
@@ -727,6 +731,9 @@ class Function:
             return self.L0_blk.b()
         else:
             return None
+    
+    def build_index(self):
+        pass
     
     def parse(self, code: bytes):
         print('parse')
@@ -769,18 +776,17 @@ class Function:
         class and with the same net effect on the stack (i.e. same pop-push). 
         Immediates (if any) are retained.
         
-        The `length` parameter is ignored.
-        
         The classes are as follows:
         
-          - i32.load m  i32.load8_u m
-          - i32.store m  i32.store8 m
-          - i32.eqz  i32.clz  i32.ctz  i32.popcnt
-          - i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
-          - i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
-          - i32.and  i32.or  i32.xor
-          - i32.shl  i32.shr_u  i32.rotl  i32.rotr
+          (i32.load m,  i32.load8_u m)
+          (i32.store m,  i32.store8 m)
+          (i32.eqz,  i32.clz,  i32.ctz,  i32.popcnt)
+          (i32.eq,  i32.ne,  i32.lt_u,  i32.gt_u,  i32.le_u,  i32.ge_u)
+          (i32.add,  i32.sub,  i32.mul,  i32.div_u,  i32.rem_u)
+          (i32.and,  i32.or,  i32.xor)
+          (i32.shl,  i32.shr_u,  i32.rotl,  i32.rotr)
         
+        The `length` parameter is ignored.
         """
         return False
     
@@ -824,8 +830,8 @@ class Function:
         existing instructions are randomly allocated to either the `if` or the 
         `else` part and the other part is filled with random new instructions.
         
-        The new block will envelop at least `length` of bytes worth of existing 
-        non-block instructions (or whole blocks).
+        The new block will envelop at least `length` existing non-block 
+        instructions (or whole blocks).
         """
         return False
     
@@ -843,7 +849,7 @@ class Function:
         Find an `if` block that does not have an `else` section and generate an 
         `else` section for it filled with random new instructions.
         
-        The new `else` section will be at least `length` bytes long.
+        The new `else` section will be at least `length` instructions long.
         """
         return False
     
@@ -852,7 +858,7 @@ class Function:
         Delete several non-block instructions (or whole blocks) but do not add 
         any new ones. The deleted region must be stack neutral (pop-push = 0).
         
-        At least `length` of bytes is deleted.
+        At least `length` instructions are deleted.
         """
         print('mutator_del')
         return False
@@ -863,7 +869,7 @@ class Function:
         existing instructions intact. The inserted region must be stack neutral 
         (pop-push = 0).
         
-        At least `length` of bytes is inserted.
+        At least `length` instructions are inserted.
         """
         return False
     
@@ -873,7 +879,7 @@ class Function:
         create a copy immediately after the original. The duplicated region 
         must be stack neutral (pop-push = 0).
         
-        At least `length` of bytes is duplicated, i.e. newly inserted.
+        At least `length` instructions are duplicated, i.e. newly inserted.
         """
     
     def mutator_cp(self, length: int) -> bool:
@@ -882,7 +888,7 @@ class Function:
         new location elsewhere in the function. The copied region must be stack 
         neutral (pop-push = 0).
         
-        At least `length` of bytes is copied, i.e. newly inserted.
+        At least `length` instructions are copied, i.e. newly inserted.
         """
         return False
     
@@ -892,7 +898,7 @@ class Function:
         location elsewhere in the function. The moved region must be stack 
         neutral (pop-push = 0).
         
-        At least `length` of bytes is moved.
+        At least `length` instructions are moved.
         """
         return False
     
@@ -900,10 +906,9 @@ class Function:
         """
         Move a series of instructions (including whole blocks) to a random new 
         location within the same block. The moved region does *not* need to be 
-        stack neutral (pop-push = 0), but it is ensured that stack size within 
-        the block never dips below zero.
+        stack neutral (pop-push = 0).
         
-        At least `length` of bytes is moved.
+        At least `length` instructions are moved.
         """
         return False
     
@@ -913,7 +918,7 @@ class Function:
         generated instructions. The overwritten region does *not* need to be 
         stack neutral (pop-push = 0).
         
-        At least `length` of bytes is overwritten. The newly generated region 
-        may be shorter than the one it replaced.
+        At least `length` instructions get overwritten. The newly generated 
+        region may be shorter than the one it replaced.
         """
         return False
