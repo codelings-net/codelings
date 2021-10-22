@@ -33,11 +33,10 @@ class Instr:
         self.push = push
         self.stack_after = None
     
-    def b(self):
+    def b(self) -> bytes:
         return self.opcode
     
     def _append_OK(self, f: 'Function') -> bool:
-        #print(f.last_instr.b().hex())
         return self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK
     
     def _update_stack(self, f: 'Function'):
@@ -74,12 +73,12 @@ class InstrWithImm(Instr):
         super().__init__(opcode, pop, push)
         self.imm = None
     
-    def b(self):
+    def b(self) -> bytes:
         return self.opcode + self.imm
     
     def _get_imm(self, f: 'Function') -> bool:
         """
-        returns True if imm will pass validation, False otherwise
+        returns True if imm will pass validation and False otherwise
         
         *** TO BE OVERRIDDEN IN DERIVED CLASSES ***
         
@@ -206,7 +205,7 @@ class BranchInstr(InstrWithImm):
     """
     The `br` and `br_if` instructions
     
-    Instance variable:
+    Instance variables:
     
       branch_type: str      'br' | 'br_if'
       dest: int             destination block to which the code will branch
@@ -235,8 +234,11 @@ class BranchInstr(InstrWithImm):
                 return False
         
         self.dest = dest
-        self.imm = util.uLEB128(dest)
+        self._update_imm()
         return True
+    
+    def _update_imm(self):
+        self.imm = util.uLEB128(self.dest)
     
     def _append(self, f: 'Function'):
         f._append_instr(self)
@@ -301,10 +303,28 @@ class MemInstr(InstrWithImm):
     """
     Memory instructions:
         `i32.load`, `i32.load8_u`, `i32.store`, `i32.store8`
+    
+    Instance variables:
+    
+      align                 see memarg 
+      offset                the memarg.offset immediate
+    
+    where the alignment (align) is a promise to the VM that:
+    
+      (baseAddr + memarg.offset) mod 2^memarg.align == 0
+    
+    "Unaligned access violating that property is still allowed and must succeed 
+    regardless of the annotation. However, it may be substantially slower on 
+    some hardware."
     """
+    def __init__(self, opcode: bytes, pop: int, push: int):
+        super().__init__(opcode, pop, push)
+        self.align = None
+        self.offset = None
+    
     def _get_imm(self, f: 'Function') -> bool:
         if f.bs is None:
-            # hard-coded poor align
+            # hard-coded poor align (slow but always works)
             # mostly small random offset (mostly 0x00 and 0x01)
             align = 0x00
             offset = util.rnd_i32_0s1s()
@@ -312,40 +332,69 @@ class MemInstr(InstrWithImm):
             align = f.bs.next_uLEB128()
             offset = f.bs.next_uLEB128()
         
-        self.imm = util.uLEB128(align) + util.uLEB128(offset)
+        self._update_imm()
         return True
+    
+    def _update_imm(self):
+        self.imm = util.uLEB128(self.align) + util.uLEB128(self.offset)
 
 
 class VarInstr(InstrWithImm):
     """
     Instructions dealing with local (and eventually global as well) variables: 
         `local.get`, `local.set` and `local.tee`
+    
+    Instance variable:
+    
+      varID                 ID of variable to be operated on
+    
     """
+    def __init__(self, opcode: bytes, pop: int, push: int):
+        super().__init__(opcode, pop, push)
+        self.varID = None
+    
     def _get_imm(self, f: 'Function') -> bool:
         # XXX TODO: hard-coded 4 locals
-        n_var = 4
+        n_vars = 4
         if f.bs is None:
-            varID = random.randrange(n_var)
+            varID = random.randrange(n_vars)
         else:
             varID = f.bs.next_uLEB128()
-            assert varID <= n_var
+            assert varID <= n_vars
         
-        self.imm = util.uLEB128(varID)
+        self.varID = varID
+        self._update_imm()
         return True
+    
+    def _update_imm(self):
+        self.imm = util.uLEB128(varID)
 
 
 class ConstInstr(InstrWithImm):
-    """The `i32.const` instruction"""
+    """
+    The `i32.const` instruction
+    
+    Instance variable:
+    
+      val                   value of the constant
+    
+    """
+    def __init__(self, opcode: bytes, pop: int, push: int):
+        super().__init__(opcode, pop, push)
+        self.val = None
     
     def _get_imm(self, f: 'Function') -> bool:
         if f.bs is None:
-            val = util.rnd_i32_0s1s()
+            self.val = util.rnd_i32_0s1s()
         else:
-            val = f.bs.next_uLEB128()
+            self.val = f.bs.next_uLEB128()
         
+        self._update_imm()
+        return True
+    
+    def _update_imm(self):
         # XXX TODO: weirdly this only seems to work up to 31 bits?!?
         self.imm = util.uLEB128(val)
-        return True
 
 
 class CodeBlock(Instr):
@@ -452,7 +501,8 @@ class Function:
                               (e.g. `end` -> `else` in an `if` block that needs
                                an `else`, or `end` after a `br`)
       length: int           length in bytes (of Function.b())
-      bs: util.ByteStream   only used for parsing
+      bs: util.ByteStream   stream of bytes to parse (only used for parsing)
+      index:                XXX TODO
     
     """
     def __init__(self, gen0=None, mutate=None):
@@ -512,14 +562,17 @@ class Function:
             self.generate(length)
         elif mutate is not None:
             self.parse(old_bytes)
-            mutator_fn()
+            
+            ### XXX TODO: What are we going to do if when this returns False,
+            ### i.e. could not find a mutation that would pass validation?
+            mutator_fn(length)
     
     """
     In terms of stack operands (pop - push):
     
       sources +1: local.get  i32.const
       
-      neutral  0: block  loop  else  end  br  return  call0  local.tee
+      neutral  0: block  loop  else  end  br  return  call  local.tee
                   i32.load  i32.load8_u  i32.eqz  i32.clz  i32.ctz  i32.popcnt
       
         sinks -1: if  br_if  drop  local.set
@@ -689,12 +742,178 @@ class Function:
             print(type(instr))
             instr.append_to(self)
         
-        print('sanity check, please remove once done testing')
+        print('sanity check, please remove when done testing')
         assert self.b() == code
         
         self.cur_blk = None
     
-    def mutator_del(self):
-        """XXX TODO"""
+    def mutator_tweak_imm(self, length: int) -> bool:
+        """
+        Mutate a single instruction immediate by changing it a little.
         
+        The `length` parameter is ignored.
+        """
+        return False
+    
+    def mutator_regen_imm(self, length: int) -> bool:
+        """
+        Mutate a single instruction immediate by regenerating it from scratch.
+        
+        The `length` parameter is ignored.
+        """
+        return False
+    
+    def mutator_tweak_instr(self, length: int) -> bool:
+        """
+        Mutate a single non-control instruction to an instruction in the same 
+        class and with the same net effect on the stack (i.e. same pop-push). 
+        Immediates (if any) are retained.
+        
+        The `length` parameter is ignored.
+        
+        The classes are as follows:
+        
+          - i32.load m  i32.load8_u m
+          - i32.store m  i32.store8 m
+          - i32.eqz  i32.clz  i32.ctz  i32.popcnt
+          - i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
+          - i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
+          - i32.and  i32.or  i32.xor
+          - i32.shl  i32.shr_u  i32.rotl  i32.rotr
+        
+        """
+        return False
+    
+    def mutator_regen_instr(self, length: int) -> bool:
+        """
+        Mutate a single non-control instruction to a different non-control 
+        instruction with the same net effect on the stack (i.e. same pop-push). 
+        Immediates (if any) are regenerated from scratch.
+        
+        The `length` parameter is ignored.
+        
+        The control instructions (which are skipped) are as follows:
+        
+          `block`  `loop`  `else`  `end`  `br`  `return`  `call`.
+        
+        All other instructions are in play.
+        """
+        return False
+    
+    def mutator_del_block(self, length: int) -> bool:
+        """
+        Delete a single block instruction (`block`, `loop` or `if`) + its 
+        corresponding `end`. Instructions inside the block are retained and 
+        simply moved down a level. For an `if` block with an `else` section, 
+        one of the two sections is picked at random and retained and the other 
+        deleted. Branch instructions inside the block are adjusted and those 
+        branching to the deleted block are removed altogether. For `if` blocks 
+        (which have pop=1) a single `drop` instruction is prepended.
+        
+        The `length` parameter is ignored.
+        """
+        return False
+    
+    def mutator_ins_block(self, length: int) -> bool:
+        """
+        Insert a single new block instruction (`block`, `loop` or `if`) + its 
+        corresponding `end` around several existing instructions. Branch 
+        instructions inside the new block are adjusted. For `if` blocks (which 
+        have pop=1), a series of random instructions is prepended which 
+        increases the stack by 1. For `if` blocks that require an `else`, the 
+        existing instructions are randomly allocated to either the `if` or the 
+        `else` part and the other part is filled with random new instructions.
+        
+        The new block will envelop at least `length` of bytes worth of existing 
+        non-block instructions (or whole blocks).
+        """
+        return False
+    
+    def mutator_del_else(self, length: int) -> bool:
+        """
+        Find an `if` block that has an `else` section but does not need it, and 
+        delete the `else` section.
+        
+        The `length` parameter is ignored.
+        """
+        return False
+    
+    def mutator_ins_else(self, length: int) -> bool:
+        """
+        Find an `if` block that does not have an `else` section and generate an 
+        `else` section for it filled with random new instructions.
+        
+        The new `else` section will be at least `length` bytes long.
+        """
+        return False
+    
+    def mutator_del(self, length: int) -> bool:
+        """
+        Delete several non-block instructions (or whole blocks) but do not add 
+        any new ones. The deleted region must be stack neutral (pop-push = 0).
+        
+        At least `length` of bytes is deleted.
+        """
         print('mutator_del')
+        return False
+    
+    def mutator_ins(self, length: int) -> bool:
+        """
+        Insert several new non-block instructions (or whole blocks) leaving 
+        existing instructions intact. The inserted region must be stack neutral 
+        (pop-push = 0).
+        
+        At least `length` of bytes is inserted.
+        """
+        return False
+    
+    def mutator_dup(self, length: int) -> bool:
+        """
+        Duplicate a series of instructions (including whole blocks), i.e. 
+        create a copy immediately after the original. The duplicated region 
+        must be stack neutral (pop-push = 0).
+        
+        At least `length` of bytes is duplicated, i.e. newly inserted.
+        """
+    
+    def mutator_cp(self, length: int) -> bool:
+        """
+        Copy a series of instructions (including whole blocks) to a random 
+        new location elsewhere in the function. The copied region must be stack 
+        neutral (pop-push = 0).
+        
+        At least `length` of bytes is copied, i.e. newly inserted.
+        """
+        return False
+    
+    def mutator_mv(self, length: int) -> bool:
+        """
+        Move a series of instructions (including whole blocks) to a random new 
+        location elsewhere in the function. The moved region must be stack 
+        neutral (pop-push = 0).
+        
+        At least `length` of bytes is moved.
+        """
+        return False
+    
+    def mutator_reorder(self, length: int) -> bool:
+        """
+        Move a series of instructions (including whole blocks) to a random new 
+        location within the same block. The moved region does *not* need to be 
+        stack neutral (pop-push = 0), but it is ensured that stack size within 
+        the block never dips below zero.
+        
+        At least `length` of bytes is moved.
+        """
+        return False
+    
+    def mutator_overwrite(self, length: int) -> bool:
+        """
+        Overwrite several non-block instructions (or whole blocks) with newly 
+        generated instructions. The overwritten region does *not* need to be 
+        stack neutral (pop-push = 0).
+        
+        At least `length` of bytes is overwritten. The newly generated region 
+        may be shorter than the one it replaced.
+        """
+        return False
