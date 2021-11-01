@@ -41,7 +41,7 @@ class Instr:
         return self.opcode
     
     def _append_OK(self, f: 'Function') -> bool:
-        return self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK
+        return self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK()
     
     def _copy_action(self, f: 'Function'):
         return copy(self)
@@ -67,6 +67,20 @@ class Instr:
         cp._append_action(f)
         return True
     
+    def update_validate(self, f: 'Function') -> bool:
+        """
+        update i and stack_after
+        
+        returns True if this instruction at this position passes validation,
+        False otherwise
+        """
+        if not self._append_OK(f):
+            return False
+        
+        self.i = f.last_instr.i + 1
+        self._update_stack(f)
+        return True
+        
     def desc(self):
         return f"{self.i:3}: {self.mnemonic:20} -{self.pop} +{self.push} " \
             f"[{self.stack_after:3}]"
@@ -91,13 +105,12 @@ class InstrWithImm(Instr):
     def b(self) -> bytes:
         return self.opcode + self.imm
     
+    def _validate_imm(self, f: 'Function') -> bool:
+        """returns True if imm will pass validation, False otherwise"""
+        raise NotImplementedError
+    
     def _get_imm(self, f: 'Function') -> bool:
-        """
-        returns True if imm will pass validation, False otherwise
-        
-        *** TO BE OVERRIDDEN IN DERIVED CLASSES ***
-        
-        """
+        """returns True if imm will pass validation, False otherwise"""
         raise NotImplementedError
     
     def _copy_action(self, f: 'Function'):
@@ -107,6 +120,9 @@ class InstrWithImm(Instr):
             return None
         else:
             return cp
+    
+    def update_validate(self, f: 'Function') -> bool:
+        return super().update_validate(f) and self._validate_imm(f)
 
 
 class FnStart(Instr):
@@ -138,19 +154,25 @@ class BlockInstr(InstrWithImm):
         self.return_type = None
     
     def _append_OK(self, f: 'Function') -> bool:
-        return (self.pop <= f.last_instr.stack_after or f.cur_blk.any_OK) and \
-            f.new_blks_OK
+        return super()._append_OK(f) and f.new_blks_OK
     
     def _update_stack(self, f: 'Function'):
         self.stack_after = 0
     
+    imm_options = (b'\x40', b'\x7f')
+    
+    def _validate_imm(self, f: 'Function') -> bool:
+        assert self.imm in BlockInstr.imm_options
+        assert (self.return_type == 'empty' and self.imm == b'\x40') or \
+            (self.return_type == 'i32' and self.imm == b'\x7f')
+        return True
+    
     def _get_imm(self, f: 'Function') -> bool:
-        options = (b'\x40', b'\x7f')
         if f.bs is None:
-            self.imm = random.choice(options)
+            self.imm = random.choice(BlockInstr.imm_options)
         else:
             self.imm = f.bs.next_b()
-            assert self.imm in options
+            assert self.imm in BlockInstr.imm_options
             
         self.return_type = 'empty' if self.imm == b'\x40' else 'i32'
         return True
@@ -166,17 +188,21 @@ class ElseInstr(Instr):
     """The `else` instruction"""
     
     def _append_OK(self, f: 'Function') -> bool:
-        return f.cur_blk.if_block and f.cur_blk.else_index is None and \
-            (f.last_instr.stack_after == f.cur_blk.targ or f.cur_blk.any_OK)
+        return type(f.cur_blk) is IfBlock and f.cur_blk.else_blk is None and \
+            (f.last_instr.stack_after == f.cur_blk.targ or f.cur_blk.any_OK())
     
     def _update_stack(self, f: 'Function'):
         self.stack_after = 0
     
     def _append_action(self, f: 'Function'):
-        f._append_instr(self)
-        f.cur_blk.need_else = False
-        f.cur_blk.else_index = len(f.cur_blk.content) - 1
-        f.cur_blk.any_OK = False
+        f._new_blk(self)
+    
+    def update_validate(self, f: 'Function') -> bool:
+        if not super().update_validate(f):
+            return False
+        
+        self._update_block(f.cur_blk)
+        return True
 
 
 class EndInstr(Instr):
@@ -184,14 +210,14 @@ class EndInstr(Instr):
     
     def _append_OK(self, f: 'Function') -> bool:
         # `if` blocks with targ>0 need an `else`, otherwise we'd get an error
-        if f.cur_blk.need_else:
+        if type(f.cur_blk) is IfBlock and f.cur_blk.need_else:
             if f.creative_OK:
                 return Function.else_instr._append_OK(f)
             else:
                 return False
         
         return (not f.cur_blk.is_L0 or f.L0_end_OK) and \
-            (f.last_instr.stack_after == f.cur_blk.targ or f.cur_blk.any_OK)
+            (f.last_instr.stack_after == f.cur_blk.targ or f.cur_blk.any_OK())
     
     def _append_action(self, f: 'Function'):
         f._end_blk(self)
@@ -199,7 +225,7 @@ class EndInstr(Instr):
     def append_to(self, f: 'Function') -> bool:
         """returns True if an instruction was appended, False otherwise"""
         
-        if f.cur_blk.need_else and f.creative_OK:
+        if type(f.cur_blk) is IfBlock and f.cur_blk.need_else and f.creative_OK:
             return Function.else_instr.append_to(f)
         
         return super().append_to(f)
@@ -235,7 +261,8 @@ class BranchInstr(InstrWithImm):
         
         br_targ = f.cur_blk.blocks[-1 - dest].br_targ
         if f.last_instr.stack_after - self.pop < br_targ:
-            if not f.cur_blk.any_OK: return False
+            if not f.cur_blk.any_OK():
+                return False
         
         self.dest = dest
         self._update_imm()
@@ -244,7 +271,7 @@ class BranchInstr(InstrWithImm):
     def _append_action(self, f: 'Function'):
         f._append_instr(self)
         if self.mnemonic == 'br l':
-            f.cur_blk.any_OK = True
+            f.cur_blk.any_OK_after = len(f.cur_blk.content) - 1
             if f.creative_OK:
                 Function.end_instr.append_to(f)   # add an `end` instruction
     
@@ -258,11 +285,11 @@ class ReturnInstr(Instr):
     def _append_OK(self, f: 'Function') -> bool:
         targ = f.cur_blk.blocks[0].targ
         return (not f.cur_blk.is_L0 or f.L0_end_OK) and \
-            (targ <= f.last_instr.stack_after or f.cur_blk.any_OK)
+            (targ <= f.last_instr.stack_after or f.cur_blk.any_OK())
     
     def _append_action(self, f: 'Function'):
         f._append_instr(self)
-        f.cur_blk.any_OK = True
+        f.cur_blk.any_OK_after = len(f.cur_blk.content) - 1
         if f.creative_OK:
             Function.end_instr.append_to(f)       # add an `end` instruction
 
@@ -415,64 +442,72 @@ class CodeBlock(Instr):
     """
     A block of WebAssembly code
     
+    Used directly for `block`, `loop` and `else` blocks and as a base class
+    for `if` blocks (which are complicated due to `else` sub-blocks)
+    
     Behaves like a pseudo-instruction: opcode is None, but the rest of the 
-    variables (i.e. pop, push, stack_after) are defined and used, as are
-    b() and append_to()
+    variables (i.e. mnemonic, pop, push, stack_after) are defined and used, 
+    as are b() and append_to()
     
     Instance variables:
+    
       targ: int             target number of operands on the stack
-                              (`end` only emitted when stack size == targ)
+                              (`end` only accepted when stack size == targ)
       br_targ: int          target for `br`s branching down to this block
                               (=targ except for `loop`, where br_targ=0)
-      if_block: bool        is this an `if` block?
-                              (an `else` can only be issued within an if block)
-      need_else: bool       is this an `if` block that *needs* an `else`?
-                              (`if` blocks with targ>0 must have an `else`)
-      else_index: int       index of the `else` instruction within content,
-                              None => not issued yet
       content: list         instructions (and other blocks) within this block
-      blocks: list          list of blocks inside which this block is nested
+      any_OK_after: int     index of the first `br` or `return` within content,
+                              None => not issued yet
+                              ("any instruction after this will be accepted")
+      blocks: list          list of blocks within which this block is nested
                               (needed for `br`; includes self at the end)
-      is_L0: bool           is this the Level 0 (function level) block?
+      parent: 'CodeBlock'   same as blocks[-2] except for `else` blocks,
+                              where it is the `if` block
+      is_L0: bool           is this the Level 0 (i.e. function-level) block?
                               (more readable than doing len(blocks)==1)
-      any_OK: bool          set after `br`/`return`, "any instruction is OK"
-    
     """
-    def __init__(self, instr0: 'Instr', parent: 'CodeBlock', targ: int = None):
+    def __init__(self,
+                 instr0: 'Instr',
+                 parent: 'CodeBlock',
+                 fn_targ: int = None):
         """
-        Two ways of calling this constructor:
+        Three ways of calling this constructor:
         
         1. Level 0 block (function level):
+           
+             CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
         
-           CodeBlock(instr0=FnStart(), parent=None, targ=fn_targ)
+        2. The standard blocks (`block` and `loop`):
+           
+             CodeBlock(instr0=BlockInstr(...), parent)
+           
+           [NB Also used by IfBlock.__init__(...)]
         
-        2. all other blocks:
+        3. The `else` sub-block within an `if` block:
+           
+             CodeBlock(instr0=ElseInstr(...), parent=IfBlock(...))
         
-           CodeBlock(instr0=BlockInstr(...), parent)
-        
-        Anything else will result in an error!
+        Anything else will result in an error
         """
         if parent is None:
             # no parent, we're at Level 0 (function level)
             assert type(instr0) is FnStart
-            assert targ is not None
+            assert fn_targ is not None
             
             m = 'L0 block'
-            super().__init__(mnemonic=m, opcode=None, pop=0, push=targ)
+            super().__init__(mnemonic=m, opcode=None, pop=0, push=fn_targ)
             self.i = -1
-            self.stack_after = targ
-            
-            self.targ = targ
-            self.br_targ = targ
-            self.if_block = False
-            self.need_else = False
+            self.stack_after = fn_targ
+            self.targ = fn_targ
+            self.br_targ = fn_targ
             self.blocks = [self]
+            self.parent = None
             self.is_L0 = True
-        else:
+        elif type(instr0) is BlockInstr:
             # have parent, we're at Level > 0
             assert type(instr0) is BlockInstr
-            assert type(parent) is CodeBlock
-            assert targ is None
+            assert isinstance(parent, CodeBlock)
+            assert fn_targ is None
             
             assert instr0.return_type in ('empty', 'i32')
             targ = 1 if instr0.return_type == 'i32' else 0
@@ -482,15 +517,41 @@ class CodeBlock(Instr):
             
             self.targ = targ
             self.br_targ = 0 if instr0.mnemonic == 'loop bt' else targ
-            self.if_block = (instr0.mnemonic == 'if bt')
-            self.need_else = (self.if_block and self.targ > 0)
             self.blocks = parent.blocks + [self]
+            self.parent = parent
             self.is_L0 = False
+        else:
+            assert type(instr0) is ElseInstr
+            assert type(parent) is IfBlock
+            assert fn_targ is None
+            
+            m = f"'{instr0.mnemonic}' block"
+            super().__init__(mnemonic=m,
+                             opcode=None,
+                             pop=parent.pop,
+                             push=parent.push)
+            
+            self.targ = parent.targ
+            self.br_targ = parent.br_targ
+            self.blocks = parent.blocks[:-1] + [self]
+            self.parent = parent
+            self.is_L0 = parent.is_L0
         
-        self.else_index = None
         self.content = [instr0]
-        self.any_OK = False
-     
+        self.any_OK_after = None
+    
+    def any_OK(self):
+        if self.any_OK_after is None:
+            return False
+        else:
+            return (self.any_OK_after < len(self.content))
+    
+    def set_i(self, i: int):
+        self.i = i
+        
+        if self.mnemonic == "'else' block":
+            self.parent.i = i
+    
     def b(self):
         return b''.join([instr.b() for instr in self.content])
     
@@ -510,6 +571,45 @@ class CodeBlock(Instr):
                     yield spacer + s
             except:
                 yield spacer + i.desc()
+
+
+class IfBlock(CodeBlock):
+    """
+    The `if` block
+    
+    Instance variables:
+    
+      need_else: bool         does this block *need* an `else`?
+                                (`if` blocks with targ>0 must have an `else`)
+      else_blk: 'CodeBlock'   `else` sub-block, None => not created yet
+    
+    """
+    def __init__(self, instr0: 'Instr', parent: 'CodeBlock'):
+        assert type(instr0) is BlockInstr
+        assert instr0.mnemonic == 'if bt'
+        
+        super().__init__(instr0, parent)
+        
+        self.need_else = (self.targ > 0)
+        self.else_blk = None
+    
+    def set_i(self, i: int):
+        if self.else_blk is None:
+            super().set_i(i)
+        else:
+            self.else_blk.set_i(i)
+    
+    def b(self):
+        e = b'' if self.else_blk is None else self.else_blk.b()
+        return super().b() + e
+    
+    def dump(self):
+        for s in super().dump():
+            yield s
+        
+        if self.else_blk is not None:
+            for s in self.else_blk.dump():
+                yield s
 
 
 class Function:
@@ -537,6 +637,8 @@ class Function:
                                an `else`, or `end` after a `br`)
       length: int           length in number of instructions
       bs: util.ByteStream   stream of bytes to parse (only used for parsing)
+      index: list           flat list of all instructions
+                              (see build_index() for details)
     
     """
     def __init__(self, gen0=None, mutate=None):
@@ -576,9 +678,9 @@ class Function:
             assert type(targ) is int
             assert type(length) is int
         elif mutate is not None:
-            old_bytes, targ, method, length = mutate
+            old_bytes, fn_targ, method, length = mutate
             assert type(old_bytes) is bytes
-            assert type(targ) is int
+            assert type(fn_targ) is int
             assert type(method) is str
             assert type(length) is int
             
@@ -586,7 +688,7 @@ class Function:
         else:
             raise RuntimeError("need either 'gen0' or 'mutate'")
         
-        self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, targ=targ)
+        self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
         self.last_instr = self.L0_blk.content[-1]
         self.cur_blk = self.L0_blk
         self.new_blks_OK = None
@@ -594,6 +696,7 @@ class Function:
         self.creative_OK = None
         self.length = 0
         self.bs = None
+        self.index = None
         
         if gen0 is not None:
             self.generate(length)
@@ -727,14 +830,23 @@ class Function:
         self.last_instr = instr
     
     def _new_blk(self, instr0: 'Instr'):
-        new_blk = CodeBlock(instr0=instr0, parent=self.cur_blk)
-        new_blk.append_to(self)
+        if instr0.mnemonic == 'if bt':
+            new_blk = IfBlock(instr0=instr0, parent=self.cur_blk)
+        else:
+            new_blk = CodeBlock(instr0=instr0, parent=self.cur_blk)
+        
+        if instr0.mnemonic == 'else':
+            self.cur_blk.else_blk = new_blk
+            new_blk.stack_after = self.cur_blk.stack_after
+        else:
+            new_blk.append_to(self)
+        
         self.cur_blk = new_blk
         self.last_instr = instr0
     
     def _end_blk(self, instr: 'Instr'):
         self.cur_blk.content.append(instr)
-        self.cur_blk.i = instr.i
+        self.cur_blk.set_i(instr.i)
         self.last_instr = self.cur_blk
         
         if self.cur_blk.is_L0:
@@ -765,8 +877,9 @@ class Function:
         else:
             return None
     
-    def build_index(self):
-        pass
+    def dump(self):
+        print(f"length = {self.length}")
+        print(*self.L0_blk.dump(), sep="\n")
     
     def parse(self, code: bytes):
         print('parse')
@@ -780,14 +893,127 @@ class Function:
             opcode = self.bs.next_int()
             instr = self.RIS_opcode2instr[opcode]
             #print(type(instr))
-            instr.append_to(self)
+            if instr.append_to(self):
+                self.length += 1
+            else:
+                raise RuntimeError(f"syntax error at {hex(self.length)}")
         
-        print('sanity check, please remove when done testing')
+        print('sanity check 1, please remove when done testing')
         assert self.b() == code
         
-        print(*self.L0_blk.dump(), sep="\n")
-        
         self.cur_blk = None
+    
+    def update_validate(self) -> bool:
+        """
+        update i and stack_after for all instructions and verify that mutated
+        code passes validation, in which case returns True (and False otherwise)
+        
+        typically called after mutations
+        """
+        self.creative_OK = False
+        pass # XXX TODO
+    
+    def build_index(self):
+        """
+        Build self.index = a flat list of all instructions
+        
+        Each entry is:
+        
+            (instr, block, i, parent_block, parent_i)
+        
+        where:
+        
+            instr = block.content[i]
+            block = parent_block.content[parent_i]
+        
+        except for `else` blocks where parent_i is None and:
+        
+            instr = block.content[i]       # as above
+            block = parent_block.else_blk
+            
+        The index starts with the initial `FnStart` at index[0] and ends with 
+        the terminal `end` at index[self.length]
+        
+        The following is True for all index entries:
+        
+            index[j][0].i == j-1
+        
+        Remember to del(self.index) when no longer needed (eg just before 
+        mutating the function) so there are no hanging references impeding
+        the garbage collector
+        """
+        def add_block(blk, parent_blk=None, parent_i=None):
+            for i in range(len(blk.content)):
+                instr = blk.content[i]
+                if isinstance(instr, CodeBlock):
+                    add_block(instr, blk, i)
+                else:
+                    self.index.append((instr, blk, i, parent_blk, parent_i))
+            
+            if type(blk) is IfBlock:
+                add_block(blk.else_blk, parent_blk=blk)
+        
+        self.index = []
+        add_block(self.L0_blk)
+        
+        print('sanity check 2, please remove when done testing')
+        for j in range(len(self.index)):
+            assert self.index[j][0].i == j-1
+    
+    def random_stack_neutral_region(self, length: int):
+        """
+        Find a random stack-neutral (pop-push = 0) region of at least `length`
+        instructions consisting of non-block instructions and whole blocks
+        
+        Returns (block, start, end) where the region consists of instructions
+        block.content[start] through to block.content[end-1]
+        
+        Returns None if there is no such region
+        
+        The initial dummy `FnStart` and the terminal `end` instruction at the 
+        end of the function are never part of the region
+        """
+        print(f"we={self.length} query={length}")
+        return None
+        
+        def starts(L: int):
+            # self.length is the terminal `end` at the end of the function
+            # we want the last start to be L before that
+            # +1 because range(3) is (0, 1, 2)
+            starts = [i for i in range(1, self.length - L + 1)]
+            random.shuffle(starts)
+            return starts
+        
+        for L in range(length, self.length):
+            print(f"L={L}")
+            for start in starts(L):
+                prev = self.index[start-1][0]
+                s, s_blk, s_i, sp_blk, sp_i = self.index[start]
+                e, e_blk, e_i, ep_blk, ep_i = self.index[start+L-1]
+                print(f"start={s.i} end={e.i}")
+                
+                if prev.stack_after != e.stack_after:
+                    continue
+                
+                if type(s) is BlockInstr: s_blk, s_i = sp_blk, sp_i
+                if type(e) is EndInstr: e_blk, e_i = ep_blk, ep_i
+                if s_blk != e_blk:
+                    continue
+                
+                if s_blk.else_index is not None:
+                    print(f"else={s_blk.content[s_blk.else_index].i}")
+                    
+                    if s_i < s_blk.else_index and s_blk.else_index <= e_i:
+                        continue
+                    
+                    if s_i == s_blk.else_index:
+                        if s_blk.need_else or e_i != len(s_blk.content)-2:
+                            continue
+                
+                print('MATCH')
+                return (s_blk, s_i, e_i)
+        
+        return None
     
     def mutator_tweak_imm(self, length: int) -> bool:
         """
@@ -891,18 +1117,28 @@ class Function:
     def mutator_del(self, length: int) -> bool:
         """
         Delete several non-block instructions and/or whole blocks, but do not 
-        add any new ones. The deleted region must be stack neutral 
+        add any new ones. The deleted region must be stack-neutral 
         (pop-push = 0).
         
         At least `length` instructions are deleted.
         """
         print('mutator_del')
-        return False
+        self.dump()
+        self.build_index()
+        
+        try:
+            blk, start, end = self.random_stack_neutral_region(length)
+        except TypeError:
+            return False
+         
+        del(blk.content[start:end])
+        self.update()
+        return True
     
     def mutator_ins(self, length: int) -> bool:
         """
         Insert several new non-block instructions and/or whole blocks, leaving 
-        existing instructions intact. The inserted region must be stack neutral 
+        existing instructions intact. The inserted region must be stack-neutral 
         (pop-push = 0).
         
         At least `length` instructions are inserted.
@@ -913,7 +1149,7 @@ class Function:
         """
         Duplicate a series of non-block instructions and/or whole blocks, i.e. 
         create a copy immediately after the original. The duplicated region 
-        must be stack neutral (pop-push = 0).
+        must be stack-neutral (pop-push = 0).
         
         At least `length` instructions are duplicated.
         """
@@ -942,7 +1178,7 @@ class Function:
         """
         Move a series of non-block instructions and/or whole blocks to a random 
         new location within their current block. The moved region does *not* 
-        need to be stack neutral (pop-push != 0).
+        need to be stack-neutral (pop-push != 0).
         
         At least `length` instructions are moved.
         """
@@ -952,7 +1188,7 @@ class Function:
         """
         Overwrite several non-block instructions and/or whole blocks with newly 
         generated instructions. The overwritten region does *not* need to be 
-        stack neutral (pop-push != 0).
+        stack-neutral (pop-push != 0).
         
         At least `length` instructions get overwritten. The newly generated 
         region may be shorter than the one it replaced.
