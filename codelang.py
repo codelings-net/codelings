@@ -12,13 +12,12 @@ class Instr:
     
     Instruction objects are initialised in two steps:
     
-    1. A list of all available instructions is created as the class variable
-       Function.RIS_instrs, but this leaves stack_after, fn_i and blk_i
-       set to None
+    1. The list of all available instructions is stored in RIS_instrs, but the
+       Instr objects in that list have stack_after, fn_i and blk_i set to None
     
-    2. When append_to() is called on these Instr objects, it creates a copy of 
-       itself, completes the initialisation *of the copy* and then appends it
-       to the current CodeBlock
+    2. When append_to() is called on one of these Instr objects, the object 
+       creates a copy of itself, completes the initialisation *of the copy* 
+       and then appends it to the current CodeBlock
     
     Instance variables:
     
@@ -210,7 +209,7 @@ class EndInstr(Instr):
     def _append_OK(self, f: 'Function') -> bool:
         # `if` blocks with targ>0 need an `else`, otherwise we'd get an error
         if type(f.cur_blk) is IfBlock and f.cur_blk.need_else:
-            return (f.creative_OK and Function.else_instr._append_OK(f))
+            return (f.creative_OK and else_instr._append_OK(f))
         
         return ((not f.cur_blk.is_L0 or f.L0_end_OK) and \
             (f.last_instr.stack_after == f.cur_blk.targ or \
@@ -221,7 +220,7 @@ class EndInstr(Instr):
     
     def append_to(self, f: 'Function') -> bool:
         if type(f.cur_blk) is IfBlock and f.cur_blk.need_else and f.creative_OK:
-            return Function.else_instr.append_to(f)
+            return else_instr.append_to(f)
         
         return super().append_to(f)
 
@@ -280,7 +279,7 @@ class BranchInstr(InstrWithImm):
     def _append(self, f: 'Function'):
         f._append_instr(self)
         if self.mnemonic == 'br l' and f.creative_OK:
-            Function.end_instr.append_to(f)       # add an `end` instruction
+            end_instr.append_to(f)       # add an `end` instruction
     
     def desc(self):
         return super().desc() + f"   dest={self.dest}"
@@ -305,7 +304,7 @@ class ReturnInstr(Instr):
     def _append(self, f: 'Function'):
         f._append_instr(self)
         if f.creative_OK:
-            Function.end_instr.append_to(f)       # add an `end` instruction
+            end_instr.append_to(f)       # add an `end` instruction
 
 
 class CallInstr(InstrWithImm):
@@ -449,6 +448,128 @@ class ConstInstr(InstrWithImm):
     
     def desc(self):
         return super().desc() + f"   val={self.val}"
+
+
+"""
+The Reduced Instruction Set (RIS)
+- - - - - - - - - - - - - - - - -
+
+In terms of stack operands (pop - push):
+
+  sources +1: local.get  i32.const
+  
+  neutral  0: block  loop  else  end  br  return  call  local.tee
+              i32.load  i32.load8_u  i32.eqz  i32.clz  i32.ctz  i32.popcnt
+  
+    sinks -1: if  br_if  drop  local.set
+              i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
+              i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
+              i32.and  i32.or  i32.xor
+              i32.shl  i32.shr_u  i32.rotl  i32.rotr
+  
+    sinks -2: select  i32.store  i32.store8
+  
+  sum of sources =  +2
+  sum of sinks   = -28  [= (-1)*(4+6+5+3+4) + (-2)*(3)]
+
+
+Emitting all instructions with equal frequencies leads to two problems:
+
+  1. Control instruction etc get swamped by random arithmetic ones
+  
+  2. There are far too many operand sinks and nowhere near enough sources
+
+In order to deal with Problem 2, let's increase the frequency of control 
+and memory instructions (except local.get) say 4x for block starts and
+2x for everything else.
+
+This then increases the weighted sum of sinks to:
+
+    sinks -1: 4x if  4x br_if  2x drop  2x local.set
+              i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
+              i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
+              i32.and  i32.or  i32.xor
+              i32.shl  i32.shr_u  i32.rotl  i32.rotr
+  
+    sinks -2: 2x select  2x i32.store  2x i32.store8
+
+  sum of sinks = (-1)*((4+4+2+2)+6+5+3+4) + (-2)*((2+2+2)) = -42
+
+so let's pick 16x for the sources so the final balance is +32 vs -42.
+"""
+# `else` and `end` need to be called directly when creative_OK is set, 
+# so need named variables outside of RIS_xxx
+else_instr = ElseInstr('else', b'\x05', 0, 0)
+end_instr = EndInstr('end', b'\x0b', 0, 0)
+
+# ( weight0, (instr00, instr01, ...),
+#   weight1, (instr10, instr11, ...), ...)
+RIS = (
+    # operand sources
+    16, (
+        ConstInstr('i32.const', b'\x41', 0, 1),
+        VarInstr('local.get x', b'\x20', 0, 1)
+    ),
+    
+    # block starts
+    4, (
+        BlockInstr('block bt', b'\x02', 0, 0),
+        BlockInstr('loop bt', b'\x03', 0, 0),
+        BlockInstr('if bt', b'\x04', 1, 0)
+    ),
+    
+    # end instruction (NB neutral for stack operands)
+    # should be x12 to balance out block starts with as many block ends,
+    # but need many more ends as fewer of them get accepted
+    32, (end_instr,),
+    
+    # remainder of control instructions, and memory instructions
+    2, (
+        else_instr,
+        BranchInstr('br l', b'\x0c', 0, 0),
+        BranchInstr('br_if l', b'\x0d', 1, 0),
+        ReturnInstr('return', b'\x0f', 0, 0),
+        CallInstr('call x', b'\x10'),
+        Instr('drop', b'\x1a', 1, 0),
+        Instr('select', b'\x1b', 3, 1),
+        VarInstr('local.set x', b'\x21', 1, 0),
+        VarInstr('local.tee x', b'\x22', 1, 1),
+        MemInstr('i32.load m', b'\x28', 1, 1),
+        MemInstr('i32.load8_u m', b'\x2d', 1, 1),
+        MemInstr('i32.store m', b'\x36', 2, 0),
+        MemInstr('i32.store8 m', b'\x3a', 2, 0)
+    ),
+    
+    # the great unwashed (aka artihmetic instructions)
+    1, (
+        Instr('i32.eqz', b'\x45', 1, 1),
+        Instr('i32.clz', b'\x67', 1, 1),
+        Instr('i32.ctz', b'\x68', 1, 1),
+        Instr('i32.popcnt', b'\x69', 1, 1),
+        Instr('i32.eq', b'\x46', 2, 1),
+        Instr('i32.ne', b'\x47', 2, 1),
+        Instr('i32.lt_u', b'\x49', 2, 1),
+        Instr('i32.gt_u', b'\x4b', 2, 1),
+        Instr('i32.le_u', b'\x4d', 2, 1),
+        Instr('i32.ge_u', b'\x4f', 2, 1),
+        Instr('i32.add', b'\x6a', 2, 1),
+        Instr('i32.sub', b'\x6b', 2, 1),
+        Instr('i32.mul', b'\x6c', 2, 1),
+        Instr('i32.div_u', b'\x6e', 2, 1),
+        Instr('i32.rem_u', b'\x70', 2, 1),
+        Instr('i32.and', b'\x71', 2, 1),
+        Instr('i32.or', b'\x72', 2, 1),
+        Instr('i32.xor', b'\x73', 2, 1),
+        Instr('i32.shl', b'\x74', 2, 1),
+        Instr('i32.shr_u', b'\x76', 2, 1),
+        Instr('i32.rotl', b'\x77', 2, 1),
+        Instr('i32.rotr', b'\x78', 2, 1)
+    )
+)
+
+RIS_instrs = [i for ins in RIS[1::2] for i in ins]
+RIS_weights = [w for w, ins in zip(RIS[0::2], RIS[1::2]) for i in ins]
+RIS_opcode2instr = {int.from_bytes(i.opcode, 'big'):i for i in RIS_instrs}
 
 
 class CodeBlock(Instr):
@@ -717,124 +838,6 @@ class Function:
             ### i.e. could not find a mutation that would pass validation?
             mutator_fn(length)
     
-    """
-    In terms of stack operands (pop - push):
-    
-      sources +1: local.get  i32.const
-      
-      neutral  0: block  loop  else  end  br  return  call  local.tee
-                  i32.load  i32.load8_u  i32.eqz  i32.clz  i32.ctz  i32.popcnt
-      
-        sinks -1: if  br_if  drop  local.set
-                  i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
-                  i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
-                  i32.and  i32.or  i32.xor
-                  i32.shl  i32.shr_u  i32.rotl  i32.rotr
-      
-        sinks -2: select  i32.store  i32.store8
-      
-      sum of sources =  +2
-      sum of sinks   = -28  [= (-1)*(4+6+5+3+4) + (-2)*(3)]
-    
-    
-    Emitting all instructions with equal frequencies leads to two problems:
-    
-      1. Control instruction etc get swamped by random arithmetic ones
-      
-      2. There are far too many operand sinks and nowhere near enough sources
-    
-    In order to deal with Problem 2, let's increase the frequency of control 
-    and memory instructions (except local.get) say 4x for block starts and
-    2x for everything else.
-    
-    This then increases the weighted sum of sinks to:
-    
-        sinks -1: 4x if  4x br_if  2x drop  2x local.set
-                  i32.eq  i32.ne  i32.lt_u  i32.gt_u  i32.le_u  i32.ge_u
-                  i32.add  i32.sub  i32.mul  i32.div_u  i32.rem_u
-                  i32.and  i32.or  i32.xor
-                  i32.shl  i32.shr_u  i32.rotl  i32.rotr
-      
-        sinks -2: 2x select  2x i32.store  2x i32.store8
-    
-      sum of sinks = (-1)*((4+4+2+2)+6+5+3+4) + (-2)*((2+2+2)) = -42
-    
-    so let's pick 16x for the sources so the final balance is +32 vs -42.
-    """
-    # `else` and `end` need to be called directly when creative_OK is set, 
-    # so need named variables outside of RIS_source
-    else_instr = ElseInstr('else', b'\x05', 0, 0)
-    end_instr = EndInstr('end', b'\x0b', 0, 0)
-    
-    # ( weight0, (instr00, instr01, ...),
-    #   weight1, (instr10, instr11, ...), ...)
-    RIS = (
-        # operand sources
-        16, (
-            ConstInstr('i32.const', b'\x41', 0, 1),
-            VarInstr('local.get x', b'\x20', 0, 1)
-        ),
-        
-        # block starts
-        4, (
-            BlockInstr('block bt', b'\x02', 0, 0),
-            BlockInstr('loop bt', b'\x03', 0, 0),
-            BlockInstr('if bt', b'\x04', 1, 0)
-        ),
-        
-        # end instruction (NB neutral for stack operands)
-        # should be x12 to balance out block starts with as many block ends,
-        # but need many more ends as fewer of them get accepted
-        32, (end_instr,),
-        
-        # remainder of control instructions, and memory instructions
-        2, (
-            else_instr,
-            BranchInstr('br l', b'\x0c', 0, 0),
-            BranchInstr('br_if l', b'\x0d', 1, 0),
-            ReturnInstr('return', b'\x0f', 0, 0),
-            CallInstr('call x', b'\x10'),
-            Instr('drop', b'\x1a', 1, 0),
-            Instr('select', b'\x1b', 3, 1),
-            VarInstr('local.set x', b'\x21', 1, 0),
-            VarInstr('local.tee x', b'\x22', 1, 1),
-            MemInstr('i32.load m', b'\x28', 1, 1),
-            MemInstr('i32.load8_u m', b'\x2d', 1, 1),
-            MemInstr('i32.store m', b'\x36', 2, 0),
-            MemInstr('i32.store8 m', b'\x3a', 2, 0)
-        ),
-        
-        # the great unwashed (aka artihmetic instructions)
-        1, (
-            Instr('i32.eqz', b'\x45', 1, 1),
-            Instr('i32.clz', b'\x67', 1, 1),
-            Instr('i32.ctz', b'\x68', 1, 1),
-            Instr('i32.popcnt', b'\x69', 1, 1),
-            Instr('i32.eq', b'\x46', 2, 1),
-            Instr('i32.ne', b'\x47', 2, 1),
-            Instr('i32.lt_u', b'\x49', 2, 1),
-            Instr('i32.gt_u', b'\x4b', 2, 1),
-            Instr('i32.le_u', b'\x4d', 2, 1),
-            Instr('i32.ge_u', b'\x4f', 2, 1),
-            Instr('i32.add', b'\x6a', 2, 1),
-            Instr('i32.sub', b'\x6b', 2, 1),
-            Instr('i32.mul', b'\x6c', 2, 1),
-            Instr('i32.div_u', b'\x6e', 2, 1),
-            Instr('i32.rem_u', b'\x70', 2, 1),
-            Instr('i32.and', b'\x71', 2, 1),
-            Instr('i32.or', b'\x72', 2, 1),
-            Instr('i32.xor', b'\x73', 2, 1),
-            Instr('i32.shl', b'\x74', 2, 1),
-            Instr('i32.shr_u', b'\x76', 2, 1),
-            Instr('i32.rotl', b'\x77', 2, 1),
-            Instr('i32.rotr', b'\x78', 2, 1)
-        )
-    )
-    
-    RIS_instrs = [i for ins in RIS[1::2] for i in ins]
-    RIS_weights = [w for w, ins in zip(RIS[0::2], RIS[1::2]) for i in ins]
-    RIS_opcode2instr = {int.from_bytes(i.opcode, 'big'):i for i in RIS_instrs}
-    
     def _append_instr(self, instr: 'Instr'):
         self.cur_blk.content.append(instr)
         self.last_instr = instr
@@ -866,7 +869,7 @@ class Function:
             self.cur_blk = self.cur_blk.blocks[-2]
     
     def _generate_instr(self):
-        instr = random.choices(self.RIS_instrs, weights=self.RIS_weights)[0]
+        instr = random.choices(RIS_instrs, weights=RIS_weights)[0]
         if instr.append_to(self):
             self.length += 1
     
@@ -901,7 +904,7 @@ class Function:
         self.bs = util.ByteStream(code)
         while not self.bs.done():
             opcode = self.bs.next_int()
-            instr = self.RIS_opcode2instr[opcode]
+            instr = RIS_opcode2instr[opcode]
             print(f"[{self.last_instr.stack_after:2}]", type(instr))
             if instr.append_to(self):
                 self.length += 1
