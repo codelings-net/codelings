@@ -272,7 +272,7 @@ class Codeling:
     
     def gen0(self, ID: str) -> None:
         targ = 0
-        f = codelang.Function(gen0=(targ, cfg.length))
+        f = codelang.Function(gen0=(targ, self.cfg.length))
         
         self.json = {
             'ID': ID,
@@ -284,15 +284,16 @@ class Codeling:
     def mutate(self, ID: str, json_source: str) -> None:
         source_cdl = Codeling(self.cfg, json_fname=json_source)
         targ = 0
-        f = codelang.Function(mutate=\
-            (source_cdl.b(), targ, self.cfg.mtfn, self.cfg.length))
+        f = codelang.Function(parse=(source_cdl.b(), targ))
+        f.mutate(self.cfg.mtfn, self.cfg.length)
         
+        desc = f" Codeling.mutate() -length {cfg.length} -mtfn {cfg.mtfn}"
         self.json = {
             'ID': ID,
             'code': f.b().hex(),
             'created': nice_now_UTC(),
             'parents': [source_cdl.json['ID']],
-            'created_by': self.cfg.this_script_release + ' Codeling.mutate()'}
+            'created_by': self.cfg.this_script_release + desc}
     
     def concat(self, cdl: 'Codeling', child_ID: str) -> 'Codeling':
         child = {

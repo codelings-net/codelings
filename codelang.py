@@ -88,18 +88,6 @@ class Instr:
         cp._append(f)
         return True
     
-    def update(self, f: 'Function') -> bool:
-        """returns True if the instruction passes validation, False otherwise"""
-        
-        self.stack_after = None
-        self.fn_i = None
-        self.blk_i = None
-        
-        if not self._append_OK(f):
-            return False
-        
-        return self._finish_init(f)
-    
     def desc(self):
         return f"{self.fn_i:2},{self.blk_i:2}: " \
             f"{self.mnemonic:20} -{self.pop} +{self.push} " \
@@ -772,14 +760,14 @@ class Function:
                               (see build_index() for details)
     
     """
-    def __init__(self, gen0=None, mutate=None):
+    def __init__(self, gen0=None, parse=None):
         """
         Two ways of calling this constructor:
         
         1. Generate a new function from scratch ("generation 0"):
-        
+           
              Function(gen0=(fn_targ, length))
-        
+           
            where:
            
              targ: int          target for the Level 0 block
@@ -787,19 +775,15 @@ class Function:
              length: int        minimum length of the new function
                                   (length = number of instructions)
            
-        2. Parse and mutate an existing function:
+        2. Parse an existing function:
         
-             Function(mutate=(old_bytes, fn_targ, method, length))
+             Function(parse=(old_bytes, fn_targ))
            
            where:
            
              old_bytes: bytes   old code to mutate
              targ: int          target for the Level 0 block
                                   (see CodeBlock for details)
-             method: str        Function.mutator_{method}() to apply
-             length: int        minimum length of any changes
-                                  (length = number of instructions;
-                                   this option is ignored by some methods)
         
         Anything else will result in an error!
         """
@@ -808,16 +792,12 @@ class Function:
             fn_targ, length = gen0
             assert type(fn_targ) is int
             assert type(length) is int
-        elif mutate is not None:
-            old_bytes, fn_targ, method, length = mutate
+        elif parse is not None:
+            old_bytes, fn_targ = parse
             assert type(old_bytes) is bytes
             assert type(fn_targ) is int
-            assert type(method) is str
-            assert type(length) is int
-            
-            mutator_fn = getattr(self, 'mutator_' + method)
         else:
-            raise RuntimeError("need either 'gen0' or 'mutate'")
+            raise RuntimeError("need either 'gen0' or 'parse'")
         
         self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
         self.last_instr = self.L0_blk.content[-1]
@@ -831,12 +811,18 @@ class Function:
         
         if gen0 is not None:
             self.generate(length)
-        elif mutate is not None:
+        elif parse is not None:
             self.parse(old_bytes)
-            
-            ### XXX TODO: What are we going to do when this (vvv) returns False,
-            ### i.e. could not find a mutation that would pass validation?
-            mutator_fn(length)
+    
+    def b(self) -> bytes:
+        if self.cur_blk is None:
+            return self.L0_blk.b()
+        else:
+            return None
+    
+    def dump(self):
+        print(f"length = {self.length}")
+        print(*self.L0_blk.dump(), sep="\n")
     
     def _append_instr(self, instr: 'Instr'):
         self.cur_blk.content.append(instr)
@@ -885,16 +871,6 @@ class Function:
         while self.cur_blk is not None:
             self._generate_instr()
     
-    def b(self) -> bytes:
-        if self.cur_blk is None:
-            return self.L0_blk.b()
-        else:
-            return None
-    
-    def dump(self):
-        print(f"length = {self.length}")
-        print(*self.L0_blk.dump(), sep="\n")
-    
     def parse(self, code: bytes):
         print('parse')
         
@@ -905,7 +881,7 @@ class Function:
         while not self.bs.done():
             opcode = self.bs.next_int()
             instr = RIS_opcode2instr[opcode]
-            print(f"[{self.last_instr.stack_after:2}]", type(instr))
+            #print(f"[{self.last_instr.stack_after:2}]", type(instr))
             if instr.append_to(self):
                 self.length += 1
             else:
@@ -917,15 +893,21 @@ class Function:
         self.cur_blk = None
         self.bs = None
     
-    def update_validate(self) -> bool:
+    def verify(self) -> bool:
         """
-        update i and stack_after for all instructions and verify that mutated
-        code passes validation, in which case returns True (and False otherwise)
+        Typically called after a mutation
         
-        typically called after mutations
+        Verifies that the function passes validation, in which case returns 
+        True (and False otherwise)
         """
-        self.creative_OK = False
-        pass # XXX TODO
+        try:
+            new = Function(parse=(self.b(), self.L0_blk.targ))
+        except RuntimeError:
+            return False
+        
+        print('verify')
+        new.dump()
+        return True
     
     def build_index(self):
         """
@@ -952,7 +934,7 @@ class Function:
         
             index[j][0].fn_i == j-1
         
-        Remember to del(self.index) when no longer needed (eg just before 
+        Remember to set self.index=None when no longer needed (eg just before 
         mutating the function) so there are no hanging references impeding
         the garbage collector
         """
@@ -989,23 +971,21 @@ class Function:
         end of the function are never part of the region
         """
         print(f"we={self.length} query={length}")
-        return None
-        
-        def starts(L: int):
-            # self.length is the terminal `end` at the end of the function
-            # we want the last start to be L before that
-            # +1 because range(3) is (0, 1, 2)
-            starts = [i for i in range(1, self.length - L + 1)]
-            random.shuffle(starts)
-            return starts
         
         for L in range(length, self.length):
             print(f"L={L}")
-            for start in starts(L):
+            
+            # [self.length] is the terminal `end` at the end of the function
+            # we want the last start to be L before that
+            # +1 because range(3) is (0, 1, 2)
+            starts = [i for i in range(1, self.length-L+1)]
+            random.shuffle(starts)
+            
+            for start in starts:
                 prev = self.index[start-1][0]
-                s, s_blk, s_i, sp_blk, sp_i, sp_e = self.index[start]
-                e, e_blk, e_i, ep_blk, ep_i, ep_e = self.index[start+L-1]
-                print(f"start={s.i} end={e.i}")
+                s, s_blk, s_i, sp_blk, sp_i, _ = self.index[start]
+                e, e_blk, e_i, ep_blk, ep_i, _ = self.index[start+L-1]
+                print(f"start={s.fn_i} end={e.fn_i}")
                 
                 if prev.stack_after != e.stack_after:
                     continue
@@ -1020,7 +1000,7 @@ class Function:
                     continue
                 
                 print('MATCH')
-                return (s_blk, s_i, e_i)
+                return (s_blk, s_i, e_i+1)
         
         return None
     
@@ -1148,9 +1128,10 @@ class Function:
             blk, start, end = self.random_stack_neutral_region(length)
         except TypeError:
             return False
-         
+        
+        print(f"mutator_del start={start} end={end}")
+        self.index=None
         del(blk.content[start:end])
-        self.update()
         return True
     
     def mutator_ins(self, length: int) -> bool:
@@ -1213,7 +1194,6 @@ class Function:
         at least `length` instructions long.
         """
         return False
-
     
     def mutator_overwrite(self, length: int) -> bool:
         """
@@ -1225,3 +1205,21 @@ class Function:
         region may be shorter than the one it replaced.
         """
         return False
+    
+    def mutate(self, method: str, length: int) -> bool:
+        """
+        Mutate the current function
+        
+        Params:
+        
+             method: str        Function.mutator_{method}() to apply
+             length: int        minimum length of any changes
+                                  (length = number of instructions;
+                                   this option is ignored by some methods)
+        """
+        assert type(method) is str
+        assert type(length) is int
+        
+        mutator_fn = getattr(self, 'mutator_' + method)
+        return (mutator_fn(length) and self.verify())
+
