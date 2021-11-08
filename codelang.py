@@ -199,7 +199,7 @@ class EndInstr(Instr):
         if type(f.cur_blk) is IfBlock and f.cur_blk.need_else:
             return (f.creative_OK and else_instr._append_OK(f))
         
-        return ((not f.cur_blk.is_L0 or f.L0_end_OK) and \
+        return ((not f.cur_blk.check_end or f.end_OK) and \
             (f.last_instr.stack_after == f.cur_blk.targ or \
             (self._any_OK(f) and f.last_instr.stack_after <= f.cur_blk.targ)))
     
@@ -230,7 +230,7 @@ class BranchInstr(InstrWithImm):
     def _append_OK(self, f: 'Function') -> bool:
         # the bulk of testing is done in _finish_init_imm() once dest is known
         return super()._append_OK(f) and \
-            (self.mnemonic != 'br l' or not f.cur_blk.is_L0 or f.L0_end_OK)
+            (self.mnemonic != 'br l' or not f.cur_blk.check_end or f.end_OK)
     
     def _dest_OK(self, f: 'Function', dest: int) -> bool:
         if len(f.cur_blk.blocks) <= dest:
@@ -278,7 +278,7 @@ class ReturnInstr(Instr):
     
     def _append_OK(self, f: 'Function') -> bool:
         targ = f.cur_blk.blocks[0].targ
-        return ((not f.cur_blk.is_L0 or f.L0_end_OK) and \
+        return ((not f.cur_blk.check_end or f.end_OK) and \
             (targ <= f.last_instr.stack_after or self._any_OK(f)))
     
     def _finish_init(self, f: 'Function') -> bool:
@@ -586,6 +586,8 @@ class CodeBlock(Instr):
                               (needed for `br`; includes self at the end)
       is_L0: bool           is this the Level 0 (i.e. function-level) block?
                               (more readable than doing len(blocks)==1)
+      check_end: bool       is this a block where the final `end` is restricted?
+                              (if True, need to check Function.end_OK first)
     """
     def __init__(self,
                  instr0: 'Instr',
@@ -617,6 +619,7 @@ class CodeBlock(Instr):
             self.br_targ = fn_targ
             self.blocks = [self]
             self.is_L0 = True
+            self.check_end = True
         else:
             # have parent, we're at Level > 0
             assert type(instr0) is BlockInstr
@@ -633,6 +636,7 @@ class CodeBlock(Instr):
             self.br_targ = 0 if instr0.mnemonic == 'loop bt' else targ
             self.blocks = parent.blocks + [self]
             self.is_L0 = False
+            self.check_end = False
         
         self.content = [instr0]
         self.any_OK_after = None
@@ -720,6 +724,7 @@ class ElseBlock(CodeBlock):
         self.br_targ = parent.br_targ
         self.blocks = parent.blocks[:-1] + [self]
         self.is_L0 = parent.is_L0
+        self.check_end = parent.check_end
         
         self.content = [instr0]
         self.any_OK_after = None
@@ -750,7 +755,8 @@ class Function:
                               (None = the function has been completed)
       
       new_blks_OK: bool     OK to start new blocks?
-      L0_end_OK: bool       OK to issue the final function `end` (at Level 0)?
+      end_OK: bool          OK to issue the final `end` for restricted blocks?
+                              ('restricted' means CodeBlock.check_end=True)
       creative_OK: bool     OK to creatively add/substitute instructions?
                               (e.g. `end` -> `else` in an `if` block that needs
                                an `else`, or `end` after a `br`)
@@ -803,7 +809,7 @@ class Function:
         self.last_instr = self.L0_blk.content[-1]
         self.cur_blk = self.L0_blk
         self.new_blks_OK = None
-        self.L0_end_OK = None
+        self.end_OK = None
         self.creative_OK = None
         self.length = 0
         self.bs = None
@@ -861,19 +867,19 @@ class Function:
     
     def generate(self, length: int):
         self.new_blks_OK = True
-        self.L0_end_OK = False
+        self.end_OK = False
         self.creative_OK = True
         while self.length < length and self.cur_blk is not None:
             self._generate_instr()
         
         self.new_blks_OK = False
-        self.L0_end_OK = True
+        self.end_OK = True
         while self.cur_blk is not None:
             self._generate_instr()
     
     def parse(self, code: bytes):
         self.new_blks_OK = True
-        self.L0_end_OK = True
+        self.end_OK = True
         self.creative_OK = False
         self.bs = util.ByteStream(code)
         while not self.bs.done():
@@ -1039,14 +1045,15 @@ class Function:
         return False
     
     def mutator_del_block(self, length: int) -> bool:
-        """ Delete a single block instruction (`block`, `loop` or `if`) + its 
+        """
+        Delete a single block instruction (`block`, `loop` or `if`) + its 
         corresponding `end`. Instructions inside the block are retained and 
-        simply moved down a level. (For an `if` block with an `else` section, 
+        simply moved down a level. For an `if` block with an `else` section, 
         one of the two sections is picked at random and retained and the other 
-        deleted.) Branch instructions inside the block are adjusted and those 
-        branching to the deleted block are removed altogether (`br_if` replaced 
-        by a `drop`). For `if` blocks (which have pop=1) a single `drop` 
-        instruction is prepended.
+        deleted. Branch instructions inside the block are adjusted and those 
+        branching to the deleted block are removed altogether (with `br_if` 
+        replaced by a `drop`). For `if` blocks (which have pop=1) a single 
+        `drop` instruction is prepended.
         
         The `length` parameter is ignored.
         """
@@ -1102,14 +1109,11 @@ class Function:
         
         At least `length` instructions are deleted.
         """
-        self.build_index()
-        
         try:
             blk, start, end = self.random_stack_neutral_region(length)
         except TypeError:
             return False
         
-        self.index=None
         del(blk.content[start:end])
         return True
     
@@ -1121,6 +1125,8 @@ class Function:
         
         At least `length` instructions are inserted.
         """
+        print('mutator_ins')
+        self.dump()
         return False
     
     def mutator_dup(self, length: int) -> bool:
@@ -1199,6 +1205,9 @@ class Function:
         assert type(method) is str
         assert type(length) is int
         
+        self.build_index()
         mutator_fn = getattr(self, 'mutator_' + method)
-        return mutator_fn(length)
-
+        retval = mutator_fn(length)
+        self.index=None
+        
+        return retval
