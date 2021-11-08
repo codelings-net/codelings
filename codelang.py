@@ -658,10 +658,10 @@ class CodeBlock(Instr):
             spacer = ' '*4
         
         for i in self.content:
-            try:
+            if isinstance(i, CodeBlock):
                 for s in i.dump():
                     yield spacer + s
-            except AttributeError:
+            else:
                 yield spacer + i.desc()
 
 
