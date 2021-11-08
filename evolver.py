@@ -462,6 +462,9 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
           f"thresh={cfg.thresh:#x}" if cfg.thresh is not None \
               else 'no threshold',
           sep=', ')
+    if cfg.thresh is None:
+        print("# 'No threshold' means that all codelings will be rejected")
+    
     print('# Started:', nice_now())
     print('#')
     print("# All times below are in microseconds, the scores are in hex")
@@ -478,7 +481,7 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(score_Codeling, cdl_gtor()):
+        for r in map(score_Codeling, cdl_gtor):
         #for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
             n_scored += 1
             if r.status == 'accept':
@@ -526,15 +529,15 @@ def gtor_gen0(cfg: 'Config', N: int) -> 'Codeling':
 
 def gtor_mutate(cfg: 'Config', N: int) -> 'Codeling':
     cdl_i = 0
-    for i in range(N):
-        for json_fname in all_json_fnames(cfg.indir):
+    for json_fname in all_json_fnames(cfg.indir):
+        for i in range(N):
             ID = f"{cfg.runid}-{cdl_i:012}"
             cdl_i += 1
             yield Codeling(cfg, mutate=(ID, json_fname), deferred=True)
 
 
 def stop_check(cdl_gtor) -> 'Codeling':
-    for cdl in cdl_gtor():
+    for cdl in cdl_gtor:
         if STOPPING:
             print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
                   file=sys.stderr)
@@ -567,6 +570,26 @@ def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
                 child_ID = f"{child_gen}-{IDs.next_ID(child_gen):08x}"
                 child = cdl1.concat(cdl2, child_ID)
                 yield child
+
+
+def uniq(cfg: 'Config'):
+    seen = {}
+    
+    print(f"# Reading '{cfg.indir}' ...")
+    for json_fname in all_json_fnames(cfg.indir):
+        cdl = Codeling(cfg, json_fname=json_fname)
+        seen[cdl.json['code']] = json_fname
+    
+    print(f"# Making '{cfg.outdir}' unique ...")
+    for json_fname in all_json_fnames(cfg.outdir):
+        cdl = Codeling(cfg, json_fname=json_fname)
+        code = cdl.json['code']
+        if code in seen:
+            print(f"'{json_fname}' has same code as '{seen[code]}', deleting")
+            os.remove(json_fname)
+            os.remove(json2wasm(json_fname))
+        else:
+            seen[code] = json_fname
 
 
 def hack():
@@ -726,6 +749,10 @@ def main():
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
         X+Y by concatenating their codes. XXX TODO BROKEN""")
+    cmds.add_argument('-uniq', action='store_true',
+        help=f"""Look at all codelings in '{cfg.outdir}' and remove those that 
+        are duplicates of (i.e. have the same code as) codelings in 
+        '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
     
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that produce new codelings, set the 'length' 
@@ -774,14 +801,15 @@ def main():
         during the run will have identifiers of the form 'runid-012345678901', 
         i.e. the run identifier followed by a dash and twelve digits (with most 
         of the leading ones being zero). The run identifier is a required 
-        argument for all types of runs except '-alive', where no new codelings 
-        are produced.""")
+        argument for all types of runs except '-alive' and '-uniq' where no new 
+        codelings are produced.""")
     
     args = parser.parse_args()
     
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
-    if any(new_cdls) is not None and args.runid is None:
-        parser.error("'runid' is required for all runs except '-alive'")
+    if any([a is not None for a in new_cdls]) and args.runid is None:
+        parser.error("'runid' is required for all runs except " \
+                     "'-alive' and '-uniq'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
@@ -789,30 +817,30 @@ def main():
     l = 'length fuel scfn mtfn thresh indir outdir nproc runid'
     for param in l.split():
         a = getattr(args, param)
-        if a is not None:
+        if a is not None or param == 'runid':
             setattr(cfg, param, a)
     
     gtor = None
     
     if args.alive:
-        def gtor(): return gtor_alive(cfg)
+        gtor = gtor_alive(cfg)
     elif args.rnd0 is not None:
-        gtor = None
         sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
     elif args.gen0 is not None:
-        def gtor(): return gtor_gen0(cfg, args.gen0)
+        gtor = gtor_gen0(cfg, args.gen0)
     elif args.mutate is not None:
-        def gtor(): return gtor_mutate(cfg, args.mutate)
+        gtor = gtor_mutate(cfg, args.mutate)
     elif args.concat is not None:
-        def gtor(): return gtor_concat(cfg, args.concat)
-    
-    def stopping_gtor(): return stop_check(gtor)
+        gtor = gtor_concat(cfg, args.concat)
+    elif args.uniq:
+        uniq(cfg)
+        return
     
     with open(cfg.template_file, "rb") as f:
         cfg.template = f.read()
     
     signal.signal(signal.SIGINT, SIGINT_handler)
-    score_Codelings(cfg, stopping_gtor)
+    score_Codelings(cfg, stop_check(gtor))
 
 
 def SIGINT_handler(sig, frame):
