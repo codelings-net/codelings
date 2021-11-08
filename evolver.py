@@ -133,7 +133,7 @@ class Codeling:
         elif json is not None:
             self.json = json
         elif gen0 is not None:
-            self.gen0(ID=gen0)
+            self.gen0(*gen0)
         elif mutate is not None:
             self.mutate(*mutate)
     
@@ -270,9 +270,9 @@ class Codeling:
         
         return bytes(self.mem.data_ptr[self.out_addr: self.mem.data_len])
     
-    def gen0(self, ID: str) -> None:
+    def gen0(self, ID: str, L: int) -> None:
         targ = 0
-        f = codelang.Function(gen0=(targ, self.cfg.length))
+        f = codelang.Function(gen0=(targ, L))
         
         self.json = {
             'ID': ID,
@@ -281,13 +281,13 @@ class Codeling:
             'parents': [],
             'created_by': self.cfg.this_script_release + ' Codeling.gen0()'}
     
-    def mutate(self, ID: str, json_source: str) -> None:
+    def mutate(self, ID: str, L: int, json_source: str) -> None:
         source_cdl = Codeling(self.cfg, json_fname=json_source)
         targ = 0
         f = codelang.Function(parse=(source_cdl.b(), targ))
-        f.mutate(self.cfg.mtfn, self.cfg.length)
+        f.mutate(self.cfg.mtfn, L)
         
-        desc = f" Codeling.mutate() -length {cfg.length} -mtfn {cfg.mtfn}"
+        desc = f" Codeling.mutate() -length {L} -mtfn {self.cfg.mtfn}"
         self.json = {
             'ID': ID,
             'code': f.b().hex(),
@@ -482,7 +482,7 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
         for r in map(score_Codeling, cdl_gtor):
-        #for r in p.imap_unordered(score_Codeling, cdl_gtor(), chunksize=20):
+        #for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -521,19 +521,21 @@ def gtor_alive(cfg: 'Config') -> 'Codeling':
                        wasm_fname=json2wasm(json_fname), deferred=True)
 
 
-def gtor_gen0(cfg: 'Config', N: int) -> 'Codeling':
-    for i in range(N):
-        ID = f"{cfg.runid}-{i:012}"
-        yield Codeling(cfg, gen0=ID, deferred=True)
+def gtor_gen0(cfg: 'Config', Ls, N: int) -> 'Codeling':
+    for L in Ls:
+        for i in range(N):
+            ID = f"{cfg.runid}-{i:012}"
+            yield Codeling(cfg, gen0=(ID, L), deferred=True)
 
 
-def gtor_mutate(cfg: 'Config', N: int) -> 'Codeling':
+def gtor_mutate(cfg: 'Config', Ls, N: int) -> 'Codeling':
     cdl_i = 0
     for json_fname in all_json_fnames(cfg.indir):
-        for i in range(N):
-            ID = f"{cfg.runid}-{cdl_i:012}"
-            cdl_i += 1
-            yield Codeling(cfg, mutate=(ID, json_fname), deferred=True)
+        for L in Ls:
+            for i in range(N):
+                ID = f"{cfg.runid}-{cdl_i:012}"
+                cdl_i += 1
+                yield Codeling(cfg, mutate=(ID, L, json_fname), deferred=True)
 
 
 def stop_check(cdl_gtor) -> 'Codeling':
@@ -762,6 +764,10 @@ def main():
         -gen0 it is the minimum number of instructions in the new codelings, 
         and finally for -mutate is the minimum number of instructions changed 
         in the parent to produce the new codelings. (Default: {cfg.length})""")
+    parser.add_argument('-upto', action='store_true',
+        help=f"""For options that use the length parameter L (see '-length' 
+        above for details), equivalent to repeatedly running this script with 
+        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5'.""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
@@ -820,6 +826,11 @@ def main():
         if a is not None or param == 'runid':
             setattr(cfg, param, a)
     
+    if args.upto:
+        Ls = range(1, cfg.length + 1)
+    else:
+        Ls = (cfg.length,)
+    
     gtor = None
     
     if args.alive:
@@ -827,9 +838,9 @@ def main():
     elif args.rnd0 is not None:
         sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
     elif args.gen0 is not None:
-        gtor = gtor_gen0(cfg, args.gen0)
+        gtor = gtor_gen0(cfg, Ls, args.gen0)
     elif args.mutate is not None:
-        gtor = gtor_mutate(cfg, args.mutate)
+        gtor = gtor_mutate(cfg, Ls, args.mutate)
     elif args.concat is not None:
         gtor = gtor_concat(cfg, args.concat)
     elif args.uniq:
