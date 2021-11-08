@@ -872,8 +872,6 @@ class Function:
             self._generate_instr()
     
     def parse(self, code: bytes):
-        print('parse')
-        
         self.new_blks_OK = True
         self.L0_end_OK = True
         self.creative_OK = False
@@ -881,14 +879,10 @@ class Function:
         while not self.bs.done():
             opcode = self.bs.next_int()
             instr = RIS_opcode2instr[opcode]
-            #print(f"[{self.last_instr.stack_after:2}]", type(instr))
             if instr.append_to(self):
                 self.length += 1
             else:
                 raise RuntimeError(f"syntax error at instr {self.length}")
-        
-        print('sanity check 1, please remove when done testing')
-        assert self.b() == code
         
         self.cur_blk = None
         self.bs = None
@@ -905,8 +899,6 @@ class Function:
         except RuntimeError:
             return False
         
-        print('verify')
-        new.dump()
         return True
     
     def build_index(self):
@@ -952,10 +944,6 @@ class Function:
         
         self.index = []
         add_block(self.L0_blk)
-        
-        print('sanity check 2, please remove when done testing')
-        for j in range(len(self.index)):
-            assert self.index[j][0].fn_i == j-1
     
     def random_stack_neutral_region(self, length: int):
         """
@@ -970,11 +958,7 @@ class Function:
         The initial dummy `FnStart` and the terminal `end` instruction at the 
         end of the function are never part of the region
         """
-        print(f"we={self.length} query={length}")
-        
         for L in range(length, self.length):
-            print(f"L={L}")
-            
             # [self.length] is the terminal `end` at the end of the function
             # we want the last start to be L before that
             # +1 because range(3) is (0, 1, 2)
@@ -985,7 +969,6 @@ class Function:
                 prev = self.index[start-1][0]
                 s, s_blk, s_i, sp_blk, sp_i, _ = self.index[start]
                 e, e_blk, e_i, ep_blk, ep_i, _ = self.index[start+L-1]
-                print(f"start={s.fn_i} end={e.fn_i}")
                 
                 if prev.stack_after != e.stack_after:
                     continue
@@ -999,7 +982,6 @@ class Function:
                 if s_blk != e_blk:
                     continue
                 
-                print('MATCH')
                 return (s_blk, s_i, e_i+1)
         
         return None
@@ -1120,8 +1102,6 @@ class Function:
         
         At least `length` instructions are deleted.
         """
-        print('mutator_del')
-        self.dump()
         self.build_index()
         
         try:
@@ -1129,7 +1109,6 @@ class Function:
         except TypeError:
             return False
         
-        print(f"mutator_del start={start} end={end}")
         self.index=None
         del(blk.content[start:end])
         return True
@@ -1221,5 +1200,5 @@ class Function:
         assert type(length) is int
         
         mutator_fn = getattr(self, 'mutator_' + method)
-        return (mutator_fn(length) and self.verify())
+        return mutator_fn(length)
 
