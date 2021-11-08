@@ -762,12 +762,12 @@ def main():
         depending on which method for generating or mutating codelings is used: 
         for -rnd0 it is the length of the new random strings in bytes, for 
         -gen0 it is the minimum number of instructions in the new codelings, 
-        and finally for -mutate is the minimum number of instructions changed 
-        in the parent to produce the new codelings. (Default: {cfg.length})""")
+        and for -mutate is the minimum number of instructions changed in the 
+        parent to produce the new codelings. (Default: {cfg.length})""")
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
         above for details), equivalent to repeatedly running this script with 
-        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5'.""")
+        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5').""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
