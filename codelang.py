@@ -654,7 +654,7 @@ class CodeBlock(Instr):
         if self.is_L0:
             spacer = ''
         else:
-            yield super().desc()
+            yield self.desc()
             spacer = ' '*4
         
         for i in self.content:
@@ -913,17 +913,17 @@ class Function:
         
         Each entry is:
         
-            (instr, block, i, parent_block, parent_i, is_else_blk)
+            (instr, block, parent_block, is_else_blk)
         
         where the following is true in most cases (where is_else_blk is False):
         
-            instr = block.content[i]
-            block = parent_block.content[parent_i]
+            instr = block.content[instr.blk_i]
+            block = parent_block.content[parent_i.blk_i]
         
         however for `else` blocks the is_else_blk flag is set to True and:
         
-            instr = block.content[i]
-            block = parent_block.content[parent_i].else_blk
+            instr = block.content[instr.blk_i]
+            block = parent_block.content[parent_i.blk_i].else_blk
         
         The index starts with the initial `FnStart` at index[0] and ends with 
         the terminal `end` (at the end of the function) at index[self.length]
@@ -936,17 +936,16 @@ class Function:
         mutating the function) so there are no hanging references impeding
         the garbage collector
         """
-        def add_block(blk, parent_blk=None, parent_i=None, is_else_blk=False):
+        def add_block(blk, parent_blk=None, is_else_blk=False):
             for i in range(len(blk.content)):
                 instr = blk.content[i]
                 if isinstance(instr, CodeBlock):
-                    add_block(instr, blk, i)
+                    add_block(instr, blk)
                 else:
-                    self.index.append((instr, blk, i,
-                                       parent_blk, parent_i, is_else_blk))
+                    self.index.append((instr, blk, parent_blk, is_else_blk))
             
             if type(blk) is IfBlock and blk.else_blk is not None:
-                add_block(blk.else_blk, parent_blk, parent_i, True)
+                add_block(blk.else_blk, parent_blk, True)
         
         self.index = []
         add_block(self.L0_blk)
@@ -972,23 +971,23 @@ class Function:
             random.shuffle(starts)
             
             for start in starts:
-                prev = self.index[start-1][0]
-                s, s_blk, s_i, sp_blk, sp_i, _ = self.index[start]
-                e, e_blk, e_i, ep_blk, ep_i, _ = self.index[start+L-1]
+                p, p_blk, pp_blk, _ = self.index[start-1]       # p = previous
+                s, s_blk, sp_blk, _ = self.index[start]         # s = start
+                e, e_blk, ep_blk, _ = self.index[start+L-1]     # e = end
                 
-                if prev.stack_after != e.stack_after:
-                    continue
-                
+                # too complicated for how rare it is, skipped
                 if type(s) is ElseInstr:
                     continue
                 
-                if type(s) is BlockInstr: s_blk, s_i = sp_blk, sp_i
-                if type(e) is EndInstr: e_blk, e_i = ep_blk, ep_i
+                if type(p) is EndInstr: p, p_blk = p_blk, pp_blk
+                if type(s) is BlockInstr: s, s_blk = s_blk, sp_blk
+                if type(e) is EndInstr: e, e_blk = e_blk, ep_blk
                 
-                if s_blk != e_blk:
+                assert p_blk == s_blk
+                if s_blk != e_blk or p.stack_after != e.stack_after:
                     continue
                 
-                return (s_blk, s_i, e_i+1)
+                return (s_blk, s.blk_i, e.blk_i+1)
         
         return None
     
@@ -1127,6 +1126,21 @@ class Function:
         """
         print('mutator_ins')
         self.dump()
+        print()
+        
+        for _ in range(10):
+            index_i = random.randrange(1, self.length+1)
+            instr, blk, i, parent_blk, parent_i, _ = self.index[index_i]
+            if i == 0:
+                instr = blk
+                blk = parent_blk
+                i = parent_i
+            
+            print(instr.desc())
+            print(blk.mnemonic)
+            print(instr.blk_i, i)
+            print()
+        
         return False
     
     def mutator_dup(self, length: int) -> bool:
