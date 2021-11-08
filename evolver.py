@@ -665,7 +665,7 @@ def main():
         ('length', 5),
         ('fuel', 50),
         ('scfn', 'v02'),
-        ('mtfn', 'del'),
+        ('mtfn', 'ins'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
         ('template_file', 'template.wasm'))
@@ -782,8 +782,8 @@ def main():
         'Codeling.score_v02()'. '-scfn list' lists all available scoring
         functions along with their descriptions. (Default: '{cfg.scfn}')""")
     parser.add_argument('-mtfn', type=type_mtfn, metavar='name',
-        help=f"""Mutator function to use, e.g. 'del' for 
-        'codelang.Function.mutator_del()'. '-mtfn list' lists all available
+        help=f"""Mutator function to use, e.g. 'ins' for 
+        'codelang.Function.mutator_ins()'. '-mtfn list' lists all available
         mutator functions along with their descriptions. (Default:
         '{cfg.mtfn}')""")
     parser.add_argument('-thresh', type=type_int_ish, metavar='T',
