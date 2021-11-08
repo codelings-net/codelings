@@ -515,7 +515,7 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
           f"scored/hour")
 
 
-def gtor_alive(cfg: 'Config') -> 'Codeling':
+def gtor_score(cfg: 'Config') -> 'Codeling':
     for json_fname in all_json_fnames(cfg.indir):
         yield Codeling(cfg, json_fname=json_fname,
                        wasm_fname=json2wasm(json_fname), deferred=True)
@@ -647,7 +647,7 @@ def main():
         
         Examples:
           # print out a list of scoring functions and their descriptions
-          {cmd} -fn list
+          {cmd} -scfn list
           
           # generate 10 new generation 0 codelings of default length and print
           # out their scores
@@ -656,7 +656,7 @@ def main():
           # generate 10 strings of random bytes of length 5, score them with
           # scoring function 'Codelings.score_v02()', print out their scores
           # and save those with score >= 0x00 to '{cfg.outdir}'
-          {cmd} -rnd0 10 -length 5 -fn v02 -thresh 0x00 run02
+          {cmd} -rnd0 10 -length 5 -scfn v02 -thresh 0x00 run02
           
         Feel free to use Ctrl-C to gracefully end the script at any point.
         """
@@ -733,7 +733,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     
     cmds = parser.add_mutually_exclusive_group(required=True)
-    cmds.add_argument('-alive', action='store_true',
+    cmds.add_argument('-score', action='store_true',
         help=f"""Score all codelings in '{cfg.indir}'.""")
     cmds.add_argument('-rnd0', type=type_int_ish, metavar='N',
         help="""Generate N new random generation 0 codelings that are 
@@ -741,9 +741,9 @@ def main():
         way will not pass the WebAssembly validation step (syntax check).""")
     cmds.add_argument('-gen0', type=type_int_ish, metavar='N',
         help="""Generate N new random generation 0 codelings using the Reduced 
-        Instruction Set (see 'progress_so_far.md' for details). All codelings 
-        generated in this way will pass the WebAssembly validation step (syntax 
-        check).""")
+        Instruction Set (see 'progress_so_far.md' for details XXX TODO). All 
+        codelings generated in this way will pass the WebAssembly validation 
+        step (syntax check).""")
     cmds.add_argument('-mutate', type=type_int_ish, metavar='N',
         help=f"""Generate new codelings by mutating each codeling in
         '{cfg.indir}' N times.""")
@@ -756,6 +756,10 @@ def main():
         are duplicates of (i.e. have the same code as) codelings in 
         '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
     
+    parser.add_argument('-upto', action='store_true',
+        help=f"""For options that use the length parameter L (see '-length' 
+        above for details), equivalent to repeatedly running this script with 
+        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5').""")
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that produce new codelings, set the 'length' 
         parameter to L. This parameter has slightly different meanings 
@@ -764,10 +768,6 @@ def main():
         -gen0 it is the minimum number of instructions in the new codelings, 
         and for -mutate is the minimum number of instructions changed in the 
         parent to produce the new codelings. (Default: {cfg.length})""")
-    parser.add_argument('-upto', action='store_true',
-        help=f"""For options that use the length parameter L (see '-length' 
-        above for details), equivalent to repeatedly running this script with 
-        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5').""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
@@ -807,7 +807,7 @@ def main():
         during the run will have identifiers of the form 'runid-012345678901', 
         i.e. the run identifier followed by a dash and twelve digits (with most 
         of the leading ones being zero). The run identifier is a required 
-        argument for all types of runs except '-alive' and '-uniq' where no new 
+        argument for all types of runs except '-score' and '-uniq' where no new 
         codelings are produced.""")
     
     args = parser.parse_args()
@@ -815,7 +815,7 @@ def main():
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
     if any([a is not None for a in new_cdls]) and args.runid is None:
         parser.error("'runid' is required for all runs except " \
-                     "'-alive' and '-uniq'")
+                     "'-score' and '-uniq'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
@@ -833,8 +833,8 @@ def main():
     
     gtor = None
     
-    if args.alive:
-        gtor = gtor_alive(cfg)
+    if args.score:
+        gtor = gtor_score(cfg)
     elif args.rnd0 is not None:
         sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
     elif args.gen0 is not None:
