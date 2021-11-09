@@ -794,7 +794,7 @@ class Function:
         Anything else will result in an error!
         """
         if gen0 is not None:
-            assert mutate is None
+            assert parse is None
             fn_targ, length = gen0
             assert type(fn_targ) is int
             assert type(length) is int
@@ -869,7 +869,7 @@ class Function:
         self.new_blks_OK = True
         self.end_OK = False
         self.creative_OK = True
-        while self.length < length and self.cur_blk is not None:
+        while self.length < length:
             self._generate_instr()
         
         self.new_blks_OK = False
@@ -913,17 +913,17 @@ class Function:
         
         Each entry is:
         
-            (instr, block, parent_block, is_else_blk)
+            (instr, blk, parent_blk, is_else_blk)
         
         where the following is true in most cases (where is_else_blk is False):
         
-            instr = block.content[instr.blk_i]
-            block = parent_block.content[parent_i.blk_i]
+            instr = blk.content[instr.blk_i]
+            blk = parent_blk.content[parent_i.blk_i]
         
         however for `else` blocks the is_else_blk flag is set to True and:
         
-            instr = block.content[instr.blk_i]
-            block = parent_block.content[parent_i.blk_i].else_blk
+            instr = blk.content[instr.blk_i]
+            blk = parent_blk.content[parent_i.blk_i].else_blk
         
         The index starts with the initial `FnStart` at index[0] and ends with 
         the terminal `end` (at the end of the function) at index[self.length]
@@ -990,6 +990,27 @@ class Function:
                 return (s_blk, s.blk_i, e.blk_i+1)
         
         return None
+    
+    def random_instr(self):
+        """
+        Find a random instruction
+        
+        Returns (instr, blk) where
+        
+            instr = blk.content[instr.blk_i]
+        
+        If the instruction is an `end`, returns the whole block (along with its 
+        parental block)
+        
+        May return the FnStart dummy instruction at the start of the function,
+        but never the `end` at the very end of the function
+        """
+        i = random.randrange(self.length)
+        instr, blk, parent_blk, _ = self.index[i]
+        if type(instr) is EndInstr:
+            instr, blk = blk, parent_blk
+        
+        return (instr, blk)
     
     def mutator_tweak_imm(self, length: int) -> bool:
         """
@@ -1113,7 +1134,10 @@ class Function:
         except TypeError:
             return False
         
+        # this boldly ignores a few errors due to CodeBlock.any_OK_after
+        # (too complicated to handle correctly for how rare they are)
         del(blk.content[start:end])
+        
         return True
     
     def mutator_ins(self, length: int) -> bool:
@@ -1128,19 +1152,32 @@ class Function:
         self.dump()
         print()
         
-        for _ in range(10):
-            index_i = random.randrange(1, self.length+1)
-            instr, blk, i, parent_blk, parent_i, _ = self.index[index_i]
-            if i == 0:
-                instr = blk
-                blk = parent_blk
-                i = parent_i
-            
-            print(instr.desc())
-            print(blk.mnemonic)
-            print(instr.blk_i, i)
-            print()
+        instr, blk = self.random_instr()
         
+        old_length = self.length
+        old_blk = copy(blk)
+        i = instr.blk_i+1
+        rest = blk[i:]
+        del(blk[i:])
+
+        targ = instr.stack_after
+        blk.check_end = True
+        if blk.any_OK_after is not None and i <= blk.any_OK_after:
+            blk.any_OK_after = None
+
+        self.cur_blk = blk
+        self.last_instr = instr
+        self.new_blks_OK = True
+        self.end_OK = False
+        self.creative_OK = True
+        while self.length - old_length < length and selfself.cur_blk is not None:
+            self._generate_instr()
+        
+        self.new_blks_OK = False
+        while self.cur_blk is not None:
+            self._generate_instr()
+        
+        blk.check_end = old_check
         return False
     
     def mutator_dup(self, length: int) -> bool:
