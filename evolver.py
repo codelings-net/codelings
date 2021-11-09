@@ -4,9 +4,8 @@ import codelang
 import util
 import config
 
-from hexdump import hexdump
-from wasmtime import Config, Engine, Store, Module, Instance, Memory, Func, \
-    WasmtimeError
+import hexdump
+import wasmtime
 
 from types import SimpleNamespace as sns
 
@@ -33,16 +32,16 @@ EOF = b'\x00' * EOF_LEN
 STOPPING = False
 
 
-def i32_load(mem: Memory, addr: int) -> int:
+def i32_load(mem: 'wasmtime.Memory', addr: int) -> int:
     return int.from_bytes(mem.data_ptr[addr:addr + 4], 'little')
 
 
-def i32_store(mem: Memory, addr: int, val: int) -> None:
+def i32_store(mem: 'wasmtime.Memory', addr: int, val: int) -> None:
     dst = ctypes.addressof(mem.data_ptr.contents) + addr
     ctypes.memmove(dst, val.to_bytes(4, 'little'), 4)
 
 
-def bytes_store(mem: Memory, addr: int, b: bytes) -> None:
+def bytes_store(mem: 'wasmtime.Memory', addr: int, b: bytes) -> None:
     dst = ctypes.addressof(mem.data_ptr.contents) + addr
     ctypes.memmove(dst, b, len(b))
 
@@ -111,9 +110,9 @@ class Codeling:
         
         self.cfg = cfg
         
-        config = Config()
+        config = wasmtime.Config()
         config.consume_fuel = True
-        self.store = Store(Engine(config))
+        self.store = wasmtime.Store(wasmtime.Engine(config))
         
         # file names we have actually read from or written to (none so far)
         self._json_fname = None
@@ -196,14 +195,14 @@ class Codeling:
         self._wasm_fname = fname
         return fname
     
-    def create_instance(self, module: 'Module'):
-        instance = Instance(self.store, module, [])
+    def create_instance(self, module: 'wasmtime.Module'):
+        instance = wasmtime.Instance(self.store, module, [])
         
         self.mem = instance.exports['m']
-        assert type(self.mem) is Memory
+        assert type(self.mem) is wasmtime.Memory
         
         self._f = instance.exports['f']
-        assert type(self._f) is Func
+        assert type(self._f) is wasmtime.Func
         
         self.rnd_addr, self.tmp_addr, self.inp_addr, self.out_addr = \
             [i32_load(self.mem, addr) for addr in range(0x00, 0x10, 0x04)]
@@ -214,11 +213,12 @@ class Codeling:
         if not fname.endswith('.wasm'):
             raise RuntimeError("'fname' needs to end in '.wasm'")
         
-        self.create_instance(Module.from_file(self.store.engine, fname))
+        module = wasmtime.Module.from_file(self.store.engine, fname)
+        self.create_instance(module)
         self._wasm_fname = fname
     
     def from_bytes(self, b: bytes):
-        self.create_instance(Module(self.store.engine, b))
+        self.create_instance(wasmtime.Module(self.store.engine, b))
     
     def link_json_wasm(self, outdir) -> None:
         for f in (self._json_fname, self._wasm_fname):
@@ -226,10 +226,10 @@ class Codeling:
     
     def instance_info(self) -> None:
         d = self._instance.exports._extern_map
-        mems = [key for key, val in d.items() if type(val) is Memory]
+        mems = [key for key, val in d.items() if type(val) is wasmtime.Memory]
         print(f'memories exported: {mems}')
         
-        funs = [key for key, val in d.items() if type(val) is Func]
+        funs = [key for key, val in d.items() if type(val) is wasmtime.Func]
         print(f'functions exported: {funs}')
         
         print(f'mem: pages=0x{self.mem.size:x} bytes=0x{self.mem.data_len:x}')
@@ -239,14 +239,14 @@ class Codeling:
     def memdump(self) -> None:
         print('dumping memory')
         print('- hdr @ 0x0000:')
-        hexdump(bytearray(self.mem.data_ptr[:0x10]))
+        hexdump.hexdump(bytearray(self.mem.data_ptr[:0x10]))
         
         for seg, length in \
                 (('rnd', 0x10), ('tmp', 0x40), ('inp', 0x40), ('out', 0x40)):
             addr = getattr(self, seg + '_addr')
             start = addr & 0xfff0
             print(f'- {seg} @ 0x{addr:04x}:')
-            hexdump(bytearray(self.mem.data_ptr[start: start + length]))
+            hexdump.hexdump(bytearray(self.mem.data_ptr[start: start + length]))
             print('   :')
         
         print()
@@ -413,7 +413,7 @@ class Codeling:
                 self.from_bytes(wasm_bytes)
             else:
                 self.read_wasm(wasm_fname)
-        except WasmtimeError as e:
+        except wasmtime.WasmtimeError as e:
             t_score = time.time()
             res = sns(ID=self.json['ID'], score=-0x80,
                       desc='VALIDATION ERROR\n' + comment(str(e)),
@@ -522,17 +522,17 @@ def gtor_score(cfg: 'Config') -> 'Codeling':
 
 
 def gtor_gen0(cfg: 'Config', Ls, N: int) -> 'Codeling':
-    for L in Ls:
-        for i in range(N):
+    for i in range(N):
+        for L in Ls:
             ID = f"{cfg.runid}-{i:012}"
             yield Codeling(cfg, gen0=(ID, L), deferred=True)
 
 
 def gtor_mutate(cfg: 'Config', Ls, N: int) -> 'Codeling':
     cdl_i = 0
-    for json_fname in all_json_fnames(cfg.indir):
-        for L in Ls:
-            for i in range(N):
+    for i in range(N):
+        for json_fname in all_json_fnames(cfg.indir):
+            for L in Ls:
                 ID = f"{cfg.runid}-{cdl_i:012}"
                 cdl_i += 1
                 yield Codeling(cfg, mutate=(ID, L, json_fname), deferred=True)
@@ -758,7 +758,7 @@ def main():
     
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
-        above for details), equivalent to repeatedly running this script with 
+        below for details), equivalent to repeatedly running this script with 
         '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5').""")
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that produce new codelings, set the 'length' 
