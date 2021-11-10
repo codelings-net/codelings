@@ -62,7 +62,7 @@ def rnd_int(n_bytes: int) -> int:
 
 
 def rnd_bytes(n_bytes: int) -> bytes:
-    return random.getrandbits(8 * n_bytes).to_bytes(n_bytes, 'big')
+    return rnd_int(n_bytes).to_bytes(n_bytes, 'big')
 
 
 _a = [x for x in range(1, 33)]          # 1 ... 32
