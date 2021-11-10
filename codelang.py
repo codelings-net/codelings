@@ -584,7 +584,7 @@ RIS = (
 RIS_instrs = [i for ins in RIS[1::2] for i in ins]
 RIS_weights = [w for w, ins in zip(RIS[0::2], RIS[1::2]) for i in ins]
 RIS_opcode2instr = {int.from_bytes(i.opcode, 'big'):i for i in RIS_instrs}
-
+RIS_mnemonic2instr = {i.mnemonic:i for i in RIS_instrs}
 
 class CodeBlock(Instr):
     """
@@ -1045,25 +1045,41 @@ class Function:
         """
         return random.choice([i for i,_,_,_ in self.index if filter_fn(i)])
     
+    instr_classes = (
+        {'i32.load m', 'i32.load8_u m'},
+        {'i32.store m', 'i32.store8 m'},
+        {'i32.eqz', 'i32.clz', 'i32.ctz', 'i32.popcnt'},
+        {'i32.eq', 'i32.ne', 'i32.lt_u', 'i32.gt_u', 'i32.le_u', 'i32.ge_u'},
+        {'i32.add', 'i32.sub', 'i32.mul', 'i32.div_u', 'i32.rem_u'},
+        {'i32.and', 'i32.or', 'i32.xor'},
+        {'i32.shl', 'i32.shr_u', 'i32.rotl', 'i32.rotr'})
+    
     def mutator_mut_instr(self, length: int) -> bool:
         """
         Mutate a single non-control instruction to an instruction in the same 
         class and with the same net effect on the stack (i.e. same pop-push). 
         Immediates (if any) are retained.
         
-        The classes are as follows:
-        
-          (i32.load m,  i32.load8_u m)
-          (i32.store m,  i32.store8 m)
-          (i32.eqz,  i32.clz,  i32.ctz,  i32.popcnt)
-          (i32.eq,  i32.ne,  i32.lt_u,  i32.gt_u,  i32.le_u,  i32.ge_u)
-          (i32.add,  i32.sub,  i32.mul,  i32.div_u,  i32.rem_u)
-          (i32.and,  i32.or,  i32.xor)
-          (i32.shl,  i32.shr_u,  i32.rotl,  i32.rotr).
-        
         The `length` parameter is ignored.
         """
-        return False
+        def filter_fn(i):
+            return (type(i) is MemInstr or \
+                (type(i) is Instr and i.mnemonic.startswith('i32.')))
+        
+        try:
+            i = self.random_instr_filter(filter_fn)
+        except IndexError:
+            return False
+        
+        # there always is exactly 1 match, any exception here is a bug
+        cl = next(c for c in Function.instr_classes if i.mnemonic in c)
+        
+        new_i = RIS_mnemonic2instr[random.choice(list(cl - {i.mnemonic}))]
+        
+        # UGLY HAAAAACK ... kids, don't do this at home!
+        i.mnemonic = new_i.mnemonic
+        i.opcode = new_i.opcode
+        return True
     
     def mutator_mut_imm(self, length: int) -> bool:
         """
