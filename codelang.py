@@ -1105,22 +1105,6 @@ class Function:
         
         return False
     
-    def mutator_regen_instr(self, length: int) -> bool:
-        """
-        Mutate a single non-control instruction to a different non-control 
-        instruction with the same net effect on the stack (i.e. same pop-push). 
-        Immediates (if any) are regenerated from scratch.
-        
-        The control instructions (which are skipped) are as follows:
-        
-          `block`  `loop`  `else`  `end`  `br`  `return`  `call`.
-        
-        All other instructions are in play.
-        
-        The `length` parameter is ignored.
-        """
-        return False
-    
     def mutator_del_block(self, length: int) -> bool:
         """
         Delete a single block instruction (`block`, `loop` or `if`) + its 
