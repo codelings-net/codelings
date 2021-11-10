@@ -112,6 +112,13 @@ class InstrWithImm(Instr):
     
     def b(self) -> bytes:
         return self.opcode + self.imm
+    
+    def _update_imm(self, f: 'Function') -> bool:
+        """To be overridden in child classes"""
+        raise NotImplementedError
+
+    def _finish_init(self, f: 'Function') -> bool:
+        return (self._update_imm(f) and super()._finish_init(f))
 
 
 class FnStart(Instr):
@@ -146,7 +153,7 @@ class BlockInstr(InstrWithImm):
     def _append_OK(self, f: 'Function') -> bool:
         return (super()._append_OK(f) and f.new_blks_OK)
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         if self.return_type is None:
             imm_options = (b'\x40', b'\x7f')
             
@@ -161,6 +168,10 @@ class BlockInstr(InstrWithImm):
             assert self.return_type in ('empty', 'i32')
             self.imm = b'\x40' if self.return_type == 'empty' else b'\x7f'
         
+        return True
+    
+    def _finish_init(self, f: 'Function') -> bool:
+        self._update_imm(f)
         self.stack_after = 0
         self.fn_i = f.last_instr.fn_i + 1
         self.blk_i = 0
@@ -241,22 +252,24 @@ class BranchInstr(InstrWithImm):
         return (br_targ <= f.last_instr.stack_after - self.pop or \
             self._any_OK(f))
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         if self.dest is None:
             if f.bs is None:
-                for i in range(5):
-                    dest = random.randrange(len(f.cur_blk.blocks))
-                    if self._dest_OK(f, dest):
+                for i in range(10):
+                    self.dest = random.randrange(len(f.cur_blk.blocks))
+                    if self._dest_OK(f, self.dest):
                         break
             else:
-                dest = f.bs.next_uLEB128()
+                self.dest = f.bs.next_uLEB128()
         
-        if not self._dest_OK(f, dest):
+        if not self._dest_OK(f, self.dest):
             return False
         
-        self.dest = dest
-        self.imm = util.uLEB128(dest)
-        
+        self.imm = util.uLEB128(self.dest)
+        return True
+    
+    def _finish_init(self, f: 'Function') -> bool:
+        self._update_imm(f)
         retval = super()._finish_init(f)
         if self.mnemonic == 'br l':
             self.stack_after = 0
@@ -313,7 +326,7 @@ class CallInstr(InstrWithImm):
         """
         return True
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         # XXX TODO
         # we are assuming only one function with zero params and zero results
         # and are hard-coding a call to this function (=function no. 0)
@@ -332,7 +345,7 @@ class CallInstr(InstrWithImm):
         self.pop = 0
         self.push = 0
         
-        return super()._finish_init(f)
+        return True
 
 
 class MemInstr(InstrWithImm):
@@ -359,7 +372,7 @@ class MemInstr(InstrWithImm):
         self.align = None
         self.offset = None
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         if self.align is None or self.offset is None:
             if f.bs is None:
                 # hard-coded poor align (slow but always works)
@@ -371,7 +384,11 @@ class MemInstr(InstrWithImm):
                 self.offset = f.bs.next_uLEB128()
         
         self.imm = util.uLEB128(self.align) + util.uLEB128(self.offset)
-        return super()._finish_init(f)
+        return True
+    
+    def regen_imm(self, f: 'Function') -> bool:
+        self.offset = None
+        return self._update_imm(f)
     
     def desc(self):
         return super().desc() + f"   align={self.align} offset={self.offset}"
@@ -392,7 +409,7 @@ class VarInstr(InstrWithImm):
         super().__init__(mnemonic, opcode, pop, push)
         self.varID = None
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         # XXX TODO: hard-coded 4 locals
         n_vars = 4
         
@@ -406,7 +423,11 @@ class VarInstr(InstrWithImm):
             return False
         
         self.imm = util.uLEB128(self.varID)
-        return super()._finish_init(f)
+        return True
+    
+    def regen_imm(self, f: 'Function') -> bool:
+        self.varID = None
+        return self._update_imm(f)
     
     def desc(self):
         return super().desc() + f"   varID={self.varID}"
@@ -425,7 +446,7 @@ class ConstInstr(InstrWithImm):
         super().__init__(mnemonic, opcode, pop, push)
         self.val = None
     
-    def _finish_init(self, f: 'Function') -> bool:
+    def _update_imm(self, f: 'Function') -> bool:
         if self.val is None:
             if f.bs is None:
                 self.val = util.rnd_i32_0s1s()
@@ -433,7 +454,11 @@ class ConstInstr(InstrWithImm):
                 self.val = f.bs.next_uLEB128()
         
         self.imm = util.uLEB128(self.val)
-        return super()._finish_init(f)
+        return True
+    
+    def regen_imm(self, f: 'Function') -> bool:
+        self.val = None
+        return self._update_imm(f)
     
     def desc(self):
         return super().desc() + f"   val={self.val}"
@@ -496,7 +521,7 @@ end_instr = EndInstr('end', b'\x0b', 0, 0)
 RIS = (
     # operand sources
     16, (
-        ConstInstr('i32.const', b'\x41', 0, 1),
+        ConstInstr('i32.const i32', b'\x41', 0, 1),
         VarInstr('local.get x', b'\x20', 0, 1)
     ),
     
@@ -1013,23 +1038,14 @@ class Function:
         
         return (instr, blk)
     
-    def mutator_tweak_imm(self, length: int) -> bool:
+    def random_instr_filter(self, filter_fn):
         """
-        Mutate a single instruction immediate by changing it a little.
-        
-        The `length` parameter is ignored.
+        Return a randomly chosen instruction from a filtered list
+        of instructions that match filter_fn(instr)
         """
-        return False
+        return random.choice([i for i,_,_,_ in self.index if filter_fn(i)])
     
-    def mutator_regen_imm(self, length: int) -> bool:
-        """
-        Mutate a single instruction immediate by regenerating it from scratch.
-        
-        The `length` parameter is ignored.
-        """
-        return False
-    
-    def mutator_tweak_instr(self, length: int) -> bool:
+    def mutator_mut_instr(self, length: int) -> bool:
         """
         Mutate a single non-control instruction to an instruction in the same 
         class and with the same net effect on the stack (i.e. same pop-push). 
@@ -1047,6 +1063,30 @@ class Function:
         
         The `length` parameter is ignored.
         """
+        return False
+    
+    def mutator_mut_imm(self, length: int) -> bool:
+        """
+        Mutate a single instruction immediate by regenerating it from scratch.
+        
+        Only used with instructions where changing the immediate can have no
+        effect on the stack.
+        
+        The `length` parameter is ignored.
+        """
+        try:
+            i = self.random_instr_filter(lambda i: hasattr(i, 'regen_imm'))
+        except IndexError:
+            return False
+        
+        old_imm = i.imm
+        for _ in range(10):
+            if not i.regen_imm(self):
+                continue
+            
+            if i.imm != old_imm:
+                return True
+        
         return False
     
     def mutator_regen_instr(self, length: int) -> bool:
