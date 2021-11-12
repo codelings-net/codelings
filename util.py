@@ -10,13 +10,13 @@ class ByteStream:
     def done(self) -> bool:
         return len(self.ba) <= self.ba_ptr
     
-    def next_int(self) -> int:
+    def next_i8(self) -> int:
         i = self.ba[self.ba_ptr]
         self.ba_ptr += 1
         return i
     
     def next_b(self) -> bytes:
-        return self.next_int().to_bytes(1, 'little')
+        return self.next_i8().to_bytes(1, 'little')
     
     def next_uLEB128(self) -> int:
         """unsigned Little Endian Base 128 compression for integers, decoder"""
@@ -24,7 +24,7 @@ class ByteStream:
         val = 0
         n = 0
         while True:
-            i = self.next_int()
+            i = self.next_i8()
             val += (i & 0x7f) << (7*n)
             n += 1
             

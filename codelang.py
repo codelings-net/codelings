@@ -909,7 +909,7 @@ class Function:
         self.creative_OK = False
         self.bs = util.ByteStream(code)
         while not self.bs.done():
-            opcode = self.bs.next_int()
+            opcode = self.bs.next_i8()
             instr = RIS_opcode2instr[opcode]
             if instr.append_to(self):
                 self.length += 1
