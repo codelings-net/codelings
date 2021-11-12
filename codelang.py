@@ -1040,10 +1040,15 @@ class Function:
     
     def random_instr_filter(self, filter_fn):
         """
-        Return a randomly chosen instruction from a filtered list
+        Find a randomly chosen instruction from a filtered list
         of instructions that match filter_fn(instr)
+        
+        Returns the full index entry for that instruction, i.e.
+        
+            (instr, blk, parent_blk, is_else_blk)
+        
         """
-        return random.choice([i for i,_,_,_ in self.index if filter_fn(i)])
+        return random.choice([i for i in self.index if filter_fn(i[0])])
     
     instr_classes = (
         {'i32.load m', 'i32.load8_u m'},
@@ -1067,7 +1072,7 @@ class Function:
                 (type(i) is Instr and i.mnemonic.startswith('i32.')))
         
         try:
-            i = self.random_instr_filter(filter_fn)
+            i = self.random_instr_filter(filter_fn)[0]
         except IndexError:
             return False
         
@@ -1084,14 +1089,16 @@ class Function:
     def mutator_mut_imm(self, length: int) -> bool:
         """
         Mutate a single instruction immediate by regenerating it from scratch.
-        
-        Only used with instructions where changing the immediate can have no
+        Only used with instructions where changing the immediate will have no
         effect on the stack.
         
         The `length` parameter is ignored.
         """
+        def filter_fn(i):
+            return hasattr(i, 'regen_imm')
+        
         try:
-            i = self.random_instr_filter(lambda i: hasattr(i, 'regen_imm'))
+            i = self.random_instr_filter(filter_fn)[0]
         except IndexError:
             return False
         
@@ -1110,7 +1117,7 @@ class Function:
         Delete a single block instruction (`block`, `loop` or `if`) + its 
         corresponding `end`. Instructions inside the block are retained and 
         simply moved down a level. For an `if` block with an `else` section, 
-        one of the two sections is picked at random and retained and the other 
+        one of the two sections is picked at random and retained, and the other 
         deleted. Branch instructions inside the block are adjusted and those 
         branching to the deleted block are removed altogether (with `br_if` 
         replaced by a `drop`). For `if` blocks (which have pop=1) a single 
@@ -1120,7 +1127,7 @@ class Function:
         """
         return False
     
-    def mutator_ins_block(self, length: int) -> bool:
+    def mutator_ins_blk(self, length: int) -> bool:
         """
         Insert a single new block instruction (`block`, `loop` or `if`) + its 
         corresponding `end` around several existing non-block instructions 
@@ -1189,22 +1196,22 @@ class Function:
         
         At least `length` instructions are inserted.
         """
-        instr, blk = self.random_instr()
+        prev, blk = self.random_instr()
         
         old_length = self.length
         old_blk = copy(blk)
         old_content_len = len(blk.content)
-        i = instr.blk_i+1
+        i = prev.blk_i+1
         rest = blk.content[i:]
         del(blk.content[i:])
         
-        targ = instr.stack_after
+        targ = prev.stack_after
         blk.restr_end = True
         if blk.any_OK_after is not None and i <= blk.any_OK_after:
             blk.any_OK_after = None
         
         self.cur_blk = blk
-        self.last_instr = instr
+        self.last_instr = prev
         self.new_blks_OK = True
         self.restr_end_OK = False
         self.creative_OK = True
