@@ -31,19 +31,15 @@ class ByteStream:
             if i < 0x80:
                 return val
 
+
 def uLEB128(val: int) -> bytes:
     """unsigned Little Endian Base 128 compression for integers, encoder"""
     
-    if val == 0:
-        return b'\x00'
-    elif val < 0:
-        raise ValueError('ERROR: val < 0')
-    else:
+    if val > 0:
         out = b''
-        
         while val > 0:
             cur = val & 0x7f
-            val = val >> 7
+            val >>= 7
             
             if val > 0:
                 cur |= 0x80
@@ -51,6 +47,41 @@ def uLEB128(val: int) -> bytes:
             out += cur.to_bytes(1, 'little')
         
         return out
+    elif val == 0:
+        return b'\x00'
+    else:
+        raise ValueError('ERROR: val < 0')
+
+
+def unsigned2signed(val: int, n_bits: int) -> int:
+    thresh = 1 << (n_bits-1)
+    c = thresh << 1
+    return val if val < thresh else val - c
+
+
+def LEB128(val: int) -> bytes:
+    """(signed) Little Endian Base 128 compression for integers, encoder"""
+    
+    if val > 0:
+        out = b''
+        cur = 0x80
+        while cur & 0x80:
+            cur = val & 0x7f
+            val >>= 7
+            
+            # the `cur & 0x40` is so the highest encoded bit isn't 1
+            if val > 0 or cur & 0x40:
+                cur |= 0x80
+            
+            out += cur.to_bytes(1, 'little')
+        
+        return out
+    elif val < 0:
+        n_bytes = (val+1).bit_length()//7 + 1
+        mask = (1 << 7*n_bytes) - 1
+        return uLEB128(val & mask)
+    else:
+        return b'\x00'
 
 
 def size(b: bytes) -> bytes:

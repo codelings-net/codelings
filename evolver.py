@@ -594,8 +594,16 @@ def uniq(cfg: 'Config'):
             seen[code] = json_fname
 
 
+def LEB128_test():
+    for i32 in (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
+                0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
+                0xffffffbf, 0xffffffc0, 0xffffffff):
+        
+        print(hex(i32), util.LEB128(util.unsigned2signed(i32, 32)).hex())
+
+
 def hack():
-    pass
+    LEB128_test()
 
 
 def print_item_desc(content):
