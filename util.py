@@ -30,6 +30,17 @@ class ByteStream:
             
             if i < 0x80:
                 return val
+    
+    def next_LEB128(self) -> int:
+        """signed Little Endian Base 128 compression for integers, decoder"""
+        
+        val = self.next_uLEB128()
+        
+        if self.ba[-1] & 0x40:
+            c = 1 << val.bit_length()
+            return val - c
+        else:
+            return val
 
 
 def uLEB128(val: int) -> bytes:
@@ -55,27 +66,30 @@ def uLEB128(val: int) -> bytes:
 
 def unsigned2signed(val: int, n_bits: int) -> int:
     thresh = 1 << (n_bits-1)
-    c = thresh << 1
-    return val if val < thresh else val - c
+    if val < thresh:
+        return val
+    else:
+        c = thresh << 1
+        return val - c
+
+
+def signed2unsigned(val: int, n_bits: int) -> int:
+    if val < 0:
+        c = 1 << n_bits
+        return c + val
+    else:
+        return val
 
 
 def LEB128(val: int) -> bytes:
-    """(signed) Little Endian Base 128 compression for integers, encoder"""
+    """signed Little Endian Base 128 compression for integers, encoder"""
     
     if val > 0:
-        out = b''
-        cur = 0x80
-        while cur & 0x80:
-            cur = val & 0x7f
-            val >>= 7
-            
-            # the `cur & 0x40` is so the highest encoded bit isn't 1
-            if val > 0 or cur & 0x40:
-                cur |= 0x80
-            
-            out += cur.to_bytes(1, 'little')
-        
-        return out
+        b = uLEB128(val)
+        if b[-1] & 0x40:
+            return b[:-1] + (b[-1] | 0x80).to_bytes(1, 'little') + b'\x00'
+        else:
+            return b
     elif val < 0:
         n_bytes = (val+1).bit_length()//7 + 1
         mask = (1 << 7*n_bytes) - 1

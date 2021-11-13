@@ -599,7 +599,11 @@ def LEB128_test():
                 0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
                 0xffffffbf, 0xffffffc0, 0xffffffff):
         
-        print(hex(i32), util.LEB128(util.unsigned2signed(i32, 32)).hex())
+        b = util.LEB128(util.unsigned2signed(i32, 32))
+        bs = util.ByteStream(b)
+        parsed = util.signed2unsigned(bs.next_LEB128(), 32)
+        assert parsed == i32
+        print(f"i32={hex(i32)}  b=0x{b.hex()}  parsed={hex(parsed)}")
 
 
 def hack():
