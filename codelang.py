@@ -451,9 +451,9 @@ class ConstInstr(InstrWithImm):
             if f.bs is None:
                 self.val = util.rnd_i32_0s1s()
             else:
-                self.val = f.bs.next_uLEB128()
+                self.val = util.signed2unsigned(bs.next_LEB128(), 32)
         
-        self.imm = util.uLEB128(self.val)
+        self.imm = util.LEB128(util.unsigned2signed(self.val, 32))
         return True
     
     def regen_imm(self, f: 'Function') -> bool:
