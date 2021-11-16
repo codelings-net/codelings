@@ -32,17 +32,17 @@ EOF = b'\x00' * EOF_LEN
 STOPPING = False
 
 
-def i32_load(mem: 'wasmtime.Memory', addr: int) -> int:
-    return int.from_bytes(mem.data_ptr[addr:addr + 4], 'little')
+def i32_load(data_ptr, addr: int) -> int:
+    return int.from_bytes(data_ptr[addr:addr + 4], 'little')
 
 
-def i32_store(mem: 'wasmtime.Memory', addr: int, val: int) -> None:
-    dst = ctypes.addressof(mem.data_ptr.contents) + addr
+def i32_store(data_ptr, addr: int, val: int) -> None:
+    dst = ctypes.addressof(data_ptr.contents) + addr
     ctypes.memmove(dst, val.to_bytes(4, 'little'), 4)
 
 
-def bytes_store(mem: 'wasmtime.Memory', addr: int, b: bytes) -> None:
-    dst = ctypes.addressof(mem.data_ptr.contents) + addr
+def bytes_store(data_ptr, addr: int, b: bytes) -> None:
+    dst = ctypes.addressof(data_ptr.contents) + addr
     ctypes.memmove(dst, b, len(b))
 
 
@@ -195,17 +195,22 @@ class Codeling:
         self._wasm_fname = fname
         return fname
     
+    def update_mem(self):
+        self.mem_ptr = self.mem.data_ptr(self.store)
+        self.mem_len = self.mem.data_len(self.store)
+    
     def create_instance(self, module: 'wasmtime.Module'):
         instance = wasmtime.Instance(self.store, module, [])
-        
-        self.mem = instance.exports['m']
+        exports = instance.exports(self.store)
+        self.mem = exports['m']
         assert type(self.mem) is wasmtime.Memory
+        self.update_mem()
         
-        self._f = instance.exports['f']
+        self._f = exports['f']
         assert type(self._f) is wasmtime.Func
         
         self.rnd_addr, self.tmp_addr, self.inp_addr, self.out_addr = \
-            [i32_load(self.mem, addr) for addr in range(0x00, 0x10, 0x04)]
+            [i32_load(self.mem_ptr, addr) for addr in range(0x00, 0x10, 0x04)]
         
         self._instance = instance
     
@@ -225,50 +230,50 @@ class Codeling:
             os.link(f, os.path.join(outdir, os.path.basename(f)))
     
     def instance_info(self) -> None:
-        d = self._instance.exports._extern_map
+        d = self._instance.exports(self.store)._extern_map
         mems = [key for key, val in d.items() if type(val) is wasmtime.Memory]
         print(f'memories exported: {mems}')
         
         funs = [key for key, val in d.items() if type(val) is wasmtime.Func]
         print(f'functions exported: {funs}')
         
-        print(f'mem: pages=0x{self.mem.size:x} bytes=0x{self.mem.data_len:x}')
+        size = self.mem.size(self.store)
+        print(f'mem: pages=0x{size:x} bytes=0x{self.mem_len:x}')
         print(f'rnd addr=0x{self.rnd_addr:06x}')
         print()
     
     def memdump(self) -> None:
         print('dumping memory')
         print('- hdr @ 0x0000:')
-        hexdump.hexdump(bytearray(self.mem.data_ptr[:0x10]))
+        hexdump.hexdump(bytearray(self.mem_ptr[:0x10]))
         
         for seg, length in \
                 (('rnd', 0x10), ('tmp', 0x40), ('inp', 0x40), ('out', 0x40)):
             addr = getattr(self, seg + '_addr')
             start = addr & 0xfff0
             print(f'- {seg} @ 0x{addr:04x}:')
-            hexdump.hexdump(bytearray(self.mem.data_ptr[start: start + length]))
+            hexdump.hexdump(bytearray(self.mem_ptr[start: start + length]))
             print('   :')
         
         print()
     
     def set_rnd(self) -> None:
-        i32_store(self.mem, self.rnd_addr, random.getrandbits(32))
+        i32_store(self.mem_ptr, self.rnd_addr, random.getrandbits(32))
     
     def set_inp(self, b: bytes) -> None:
-        bytes_store(self.mem, self.inp_addr, b)
+        bytes_store(self.mem_ptr, self.inp_addr, b)
     
     def get_out(self) -> bytes:
         zero_len = 0
-        for i in range(self.out_addr, self.mem.data_len):
-            if self.mem.data_ptr[i] == 0x00:
+        for i in range(self.out_addr, self.mem_len):
+            if self.mem_ptr[i] == 0x00:
                 zero_len += 1
                 if zero_len == EOF_LEN:
-                    return bytes(
-                        self.mem.data_ptr[self.out_addr: i - EOF_LEN + 1])
+                    return bytes(self.mem_ptr[self.out_addr: i-EOF_LEN+1])
             else:
                 zero_len = 0
         
-        return bytes(self.mem.data_ptr[self.out_addr: self.mem.data_len])
+        return bytes(self.mem_ptr[self.out_addr: self.mem_len])
     
     def gen0(self, ID: str, L: int) -> None:
         targ = 0
@@ -307,27 +312,35 @@ class Codeling:
     
     def run_wasm(self) -> (str, int, float):
         t_run = time.time()
-        self.store.add_fuel(50)
-        e = None
+        self.store.add_fuel(self.cfg.fuel + 1)
+        fuel_left = self.store.consume_fuel(1)
+        if self.cfg.fuel < fuel_left:
+            fuel_left = self.store.consume_fuel(fuel_left - self.cfg.fuel)
         
+        assert fuel_left == self.cfg.fuel
+        e = None
         try:
-            self._f()  # function 'f' exported by the WebAssembly module
+            # function 'f' exported by the WebAssembly module
+            self._f(self.store)
         except Exception as err:
             e = comment(str(err))
         
+        self.update_mem()
         return (e, self.store.fuel_consumed(), time.time() - t_run)
     
     def score_v00(self) -> 'SimpleNamespace':
         """Checks whether there was any output to memory at all. WARNING: This
         function is SLOW."""
         
-        mem = self.mem.data_ptr[:self.mem.data_len]
+        self.set_rnd()
+        self.set_inp(self.b())
+        mem = self.mem_ptr[:self.mem_len]
         e, fuel, t_run = self.run_wasm()
         
         score, desc = 0x00, 'OK'
         if e:
             score, desc = -0x40, 'runtime exception\n' + e
-        elif mem == self.mem.data_ptr[:self.mem.data_len]:
+        elif mem == self.mem_ptr[:self.mem_len]:
             score, desc = -0x20, 'no output at all'
         
         return sns(ID=self.json['ID'], score=score, desc=desc, fuel=fuel,
@@ -337,12 +350,14 @@ class Codeling:
         """Checks that the header is intact and whether there was any output to
         'out'."""
         
-        mem = self.mem.data_ptr[:self.rnd_addr]
+        self.set_rnd()
+        self.set_inp(self.b())
+        mem = self.mem_ptr[:self.rnd_addr]
         e, fuel, t_run = self.run_wasm()
         
         if e:
             score, desc = -0x40, 'runtime exception\n' + e
-        elif mem[:self.rnd_addr] != self.mem.data_ptr[:self.rnd_addr]:
+        elif mem[:self.rnd_addr] != self.mem_ptr[:self.rnd_addr]:
             score, desc = -0x30, 'overwrote header'
         else:
             out = self.get_out()
@@ -356,14 +371,16 @@ class Codeling:
         
         return sns(ID=self.json['ID'], score=score, desc=desc, fuel=fuel,
                    t_run=t_run)
-
+    
     def score_v02(self) -> 'SimpleNamespace':
         """Penalties: -0x01 for every byte of code length, -0x10 for
         overwriting the header or a runtime exception (incl running out of
         fuel), -0x40 when no output to 'out'. Reward: +0x40 for every byte
         written to 'out'."""
         
-        mem = self.mem.data_ptr[:self.rnd_addr]
+        self.set_rnd()
+        self.set_inp(self.b())
+        mem = self.mem_ptr[:self.rnd_addr]
         e, fuel, t_run = self.run_wasm()
         
         score, msg = 0x00, ''
@@ -377,7 +394,44 @@ class Codeling:
         else:
             desc = 'OK'
         
-        if mem[:self.rnd_addr] != self.mem.data_ptr[:self.rnd_addr]:
+        if mem[:self.rnd_addr] != self.mem_ptr[:self.rnd_addr]:
+            score -= 0x10
+            desc += ', overwrote header'
+        
+        out = self.get_out()
+        if len(out) == 0:
+            score -= 0x40
+            desc += ', no output to out'
+        else:
+            writes = [i + self.out_addr for i, b in enumerate(out) if b]
+            score += 0x40 * len(writes)
+            desc += ' - ' + ' '.join([f'{w:4x}' for w in writes])
+        
+        score -= round(len(self.json['code']) / 2)
+        return sns(ID=self.json['ID'], score=score, desc=desc + msg, fuel=fuel,
+            t_run=t_run)
+    
+    def score_LEB128(self) -> 'SimpleNamespace':
+        """Penalties: -0x01 for every byte of code length, -0x10 for
+        overwriting the header or a runtime exception (incl running out of
+        fuel), -0x40 when no output to 'out'. Reward: +0x40 for every byte
+        written to 'out'."""
+        
+        mem = self.mem_ptr[:self.rnd_addr]
+        e, fuel, t_run = self.run_wasm()
+        
+        score, msg = 0x00, ''
+        if e:
+            score -= 0x10
+            
+            if e == '# all fuel consumed by WebAssembly':
+                desc = 'out of fuel'
+            else:
+                desc, msg = 'runtime exception', '\n' + e
+        else:
+            desc = 'OK'
+        
+        if mem[:self.rnd_addr] != self.mem_ptr[:self.rnd_addr]:
             score -= 0x10
             desc += ', overwrote header'
         
@@ -422,8 +476,6 @@ class Codeling:
             # scoring (includes running)
             t_score = time.time()
             score_fn = getattr(self, 'score_' + self.cfg.scfn)
-            self.set_rnd()
-            self.set_inp(self.b())
             res = score_fn()
         
         if self.cfg.thresh is not None and res.score >= self.cfg.thresh:
@@ -676,7 +728,7 @@ def main():
     defaults = (
         ('length', 5),
         ('fuel', 50),
-        ('scfn', 'v02'),
+        ('scfn', 'LEB128'),
         ('mtfn', 'ins'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
