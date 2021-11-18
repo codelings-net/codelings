@@ -189,6 +189,7 @@ class ElseInstr(Instr):
     
     def _append_OK(self, f: 'Function') -> bool:
         return (type(f.cur_blk) is IfBlock and f.cur_blk.else_blk is None and \
+            not f.cur_blk.restr_end and \
             (f.last_instr.stack_after == f.cur_blk.targ or \
             (self._any_OK(f) and f.last_instr.stack_after <= f.cur_blk.targ)))
     
@@ -451,7 +452,7 @@ class ConstInstr(InstrWithImm):
             if f.bs is None:
                 self.val = util.rnd_i32_0s1s()
             else:
-                self.val = util.signed2unsigned(bs.next_LEB128(), 32)
+                self.val = util.signed2unsigned(f.bs.next_LEB128(), 32)
         
         self.imm = util.LEB128(util.unsigned2signed(self.val, 32))
         return True
