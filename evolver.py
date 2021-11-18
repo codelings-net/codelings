@@ -24,6 +24,9 @@ import textwrap
 import time
 
 
+# codeling header, taken from template.wat
+HEADER = b'\xfc\x00\x00\x00\x00\x01\x00\x00\x00\x80\x00\x00\x00\xc0\x00\x00'
+
 # signal for end of the 'out' (output) section of Codeling memory
 EOF_LEN = 0x10
 EOF = b'\x00' * EOF_LEN
@@ -55,7 +58,10 @@ def json2wasm(json_fname: str) -> str:
 
 
 def link2dir(f: str, d: str) -> None:
-    os.link(f, os.path.join(d, os.path.basename(f)))
+    try:
+        os.link(f, os.path.join(d, os.path.basename(f)))
+    except FileExistsError:
+        pass
 
 
 def nice_now():
@@ -257,11 +263,17 @@ class Codeling:
         
         print()
     
+    def reset_hdr(self) -> None:
+        bytes_store(self.mem_ptr, 0x00, HEADER)
+    
     def set_rnd(self) -> None:
         i32_store(self.mem_ptr, self.rnd_addr, random.getrandbits(32))
     
     def set_inp(self, b: bytes) -> None:
         bytes_store(self.mem_ptr, self.inp_addr, b)
+    
+    def clear_out(self) -> None:
+        bytes_store(self.mem_ptr, self.out_addr, b'\x00'*0x100)
     
     def get_out(self) -> bytes:
         zero_len = 0
@@ -312,10 +324,14 @@ class Codeling:
     
     def run_wasm(self) -> (str, int, float):
         t_run = time.time()
-        self.store.add_fuel(self.cfg.fuel + 1)
-        fuel_left = self.store.consume_fuel(1)
-        if self.cfg.fuel < fuel_left:
-            fuel_left = self.store.consume_fuel(fuel_left - self.cfg.fuel)
+        
+        fuel_left = -100
+        while fuel_left != self.cfg.fuel:
+            if fuel_left < self.cfg.fuel:
+                self.store.add_fuel(self.cfg.fuel - fuel_left)
+                fuel_left = self.store.consume_fuel(0)
+            else:
+                fuel_left = self.store.consume_fuel(fuel_left - self.cfg.fuel)
         
         assert fuel_left == self.cfg.fuel
         e = None
@@ -411,42 +427,85 @@ class Codeling:
         return sns(ID=self.json['ID'], score=score, desc=desc + msg, fuel=fuel,
             t_run=t_run)
     
-    def score_LEB128(self) -> 'SimpleNamespace':
-        """Penalties: -0x01 for every byte of code length, -0x10 for
-        overwriting the header or a runtime exception (incl running out of
-        fuel), -0x40 when no output to 'out'. Reward: +0x40 for every byte
-        written to 'out'."""
+    def _score_LEB128_val(self, val) -> 'SimpleNamespace':
+        self.reset_hdr()
+        self.set_inp(val.to_bytes(4, 'little'))
+        self.clear_out()
         
+        targ = util.LEB128(util.unsigned2signed(val, 32)) + b'\x0b'
         mem = self.mem_ptr[:self.rnd_addr]
         e, fuel, t_run = self.run_wasm()
         
         score, msg = 0x00, ''
         if e:
-            score -= 0x10
+            score -= 0x40
             
             if e == '# all fuel consumed by WebAssembly':
-                desc = 'out of fuel'
+                desc = 'fuel'
             else:
-                desc, msg = 'runtime exception', '\n' + e
+                desc = 'exc'
         else:
             desc = 'OK'
         
         if mem[:self.rnd_addr] != self.mem_ptr[:self.rnd_addr]:
-            score -= 0x10
-            desc += ', overwrote header'
+            score -= 0x40
+            desc += ',hdr'
         
         out = self.get_out()
         if len(out) == 0:
-            score -= 0x40
-            desc += ', no output to out'
+            desc += ':-'
         else:
-            writes = [i + self.out_addr for i, b in enumerate(out) if b]
-            score += 0x40 * len(writes)
-            desc += ' - ' + ' '.join([f'{w:4x}' for w in writes])
+            score += 0x100
+            graded, graded_end = '', ''
+            L = len(out)
+            diff = L - len(targ)
+            if 0 < diff:
+                graded_end = 'i' * diff    # out > targ, these are (i)nsertions
+                score -= 0x08 * diff
+                L = len(targ)
+            elif diff < 0:                 # out < targ, these are (d)eletions
+                diff = -diff
+                graded_end = 'd' * diff
+                score -= 0x08 * diff
+            
+            for o, t in zip(out, targ):
+                if o == t:
+                    if o == 0x00:
+                        graded += 'Z'      # (Z)ero
+                        score += 0x20
+                    else:
+                        graded += 'M'      # (M)atch
+                        score += 0x80
+                else:
+                    graded += 'x'          # substitution
+                    score -= 0x08
+                    
+            desc += ':' + graded + graded_end
         
         score -= round(len(self.json['code']) / 2)
-        return sns(ID=self.json['ID'], score=score, desc=desc + msg, fuel=fuel,
+        return sns(ID=self.json['ID'], score=score, desc=desc, fuel=fuel,
             t_run=t_run)
+    
+    def score_LEB128(self) -> 'SimpleNamespace':
+        """Penalties: -0x01 for every byte of code length, -0x08 for every 
+        wrong byte written (or not written) to 'out', -0x40 for overwriting the 
+        header or a runtime exception (incl running out of fuel). Reward: 
+        +0x100 when there is any output to 'out' plus +0x80 for every correct 
+        non-zero byte written to 'out' (reduced to +0x20 for 0x00 bytes). 
+        Summed up over 8 test values."""
+        
+        total = sns(ID=self.json['ID'], score=0, desc='', fuel=0, t_run=0)
+        desc = []
+        vals = (0x1b, 0x3f, 0x40, 0x7f, 0x80, 0x12345, 0x7ffffff, 0x8000000)
+        for val in vals:
+            retval = self._score_LEB128_val(val)
+            total.score += retval.score
+            total.fuel = retval.fuel
+            total.t_run += retval.t_run
+            desc.append(retval.desc)
+        
+        total.desc = ' '.join(desc)
+        return total
     
     def score(self) -> 'SimpleNamespace':
         # generation
@@ -533,8 +592,8 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(score_Codeling, cdl_gtor):
-        #for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
+        #for r in map(score_Codeling, cdl_gtor):
+        for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -574,9 +633,11 @@ def gtor_score(cfg: 'Config') -> 'Codeling':
 
 
 def gtor_gen0(cfg: 'Config', Ls, N: int) -> 'Codeling':
+    cdl_i = 0
     for i in range(N):
         for L in Ls:
-            ID = f"{cfg.runid}-{i:012}"
+            ID = f"{cfg.runid}-{cdl_i:012}"
+            cdl_i += 1
             yield Codeling(cfg, gen0=(ID, L), deferred=True)
 
 
@@ -648,8 +709,10 @@ def uniq(cfg: 'Config'):
 
 def LEB128_test():
     for i32 in (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
+                0x7ffffff, 0x8000000,
                 0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
-                0xffffffbf, 0xffffffc0, 0xffffffff):
+                0xffffffbf, 0xffffffc0, 0xffffffff,
+                0x1b, 0x3f, 0x40, 0x7f, 0x80, 0x12345, 0x7ffffff, 0x8000000):
         
         b = util.LEB128(util.unsigned2signed(i32, 32))
         bs = util.ByteStream(b)
