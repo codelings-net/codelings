@@ -31,6 +31,11 @@ HEADER = b'\xfc\x00\x00\x00\x00\x01\x00\x00\x00\x80\x00\x00\x00\xc0\x00\x00'
 EOF_LEN = 0x10
 EOF = b'\x00' * EOF_LEN
 
+# test values for the Codeling.score_LEB128xxx(...) scoring functions
+TEST_VALS = (0x0c, 0x1b, 0x3f, 0x40, 0x7f, 0x80, 0x13c, 0x1f4d, 
+             0x12345, 0x23456, 0x45678, 0x7f7654,
+             0x5c3d123, 0x7ffffff, 0x8000000, 0x7f4bb765)
+
 # set to True by SIGINT_handler() (called when the user presses Ctrl-C)
 STOPPING = False
 
@@ -140,7 +145,8 @@ class Codeling:
         elif gen0 is not None:
             self.gen0(*gen0)
         elif mutate is not None:
-            self.mutate(*mutate)
+            if not self.mutate(*mutate):
+                raise RuntimeError('Failed to generate codeling')
     
     def _deferred_init(self) -> None:
         if self._deferred:
@@ -298,19 +304,21 @@ class Codeling:
             'parents': [],
             'created_by': self.cfg.this_script_release + ' Codeling.gen0()'}
     
-    def mutate(self, ID: str, L: int, json_source: str) -> None:
+    def mutate(self, ID: str, L: int, json_source: str) -> bool:
         source_cdl = Codeling(self.cfg, json_fname=json_source)
         targ = 0
         f = codelang.Function(parse=(source_cdl.b(), targ))
-        f.mutate(self.cfg.mtfn, L)
+        retval = f.mutate(self.cfg.mtfn, L)
         
-        desc = f" Codeling.mutate() -length {L} -mtfn {self.cfg.mtfn}"
+        desc = f"Codeling.mutate() -length {L} -mtfn {self.cfg.mtfn}"
         self.json = {
             'ID': ID,
             'code': f.b().hex(),
             'created': nice_now_UTC(),
             'parents': [source_cdl.json['ID']],
-            'created_by': self.cfg.this_script_release + desc}
+            'created_by': self.cfg.this_script_release + ' ' + desc}
+        
+        return retval
     
     def concat(self, cdl: 'Codeling', child_ID: str) -> 'Codeling':
         child = {
@@ -325,15 +333,22 @@ class Codeling:
     def run_wasm(self) -> (str, int, float):
         t_run = time.time()
         
-        fuel_left = -100
+        # JFC, why don't they just let us set the fuel level?
+        # Or not die when we ask it how much fuel is left?
+        # This weird stuff is needed because it looks as though the fuel level 
+        # can go negative (!), in which case consume_fuel(0) throws an error
+        # *even after* the add_fuel(...) call.
+        fuel_left = 0
         while fuel_left != self.cfg.fuel:
             if fuel_left < self.cfg.fuel:
                 self.store.add_fuel(self.cfg.fuel - fuel_left)
-                fuel_left = self.store.consume_fuel(0)
+                try:
+                    fuel_left = self.store.consume_fuel(0)
+                except wasmtime.WasmtimeError:
+                    fuel_left = 0
             else:
                 fuel_left = self.store.consume_fuel(fuel_left - self.cfg.fuel)
         
-        assert fuel_left == self.cfg.fuel
         e = None
         try:
             # function 'f' exported by the WebAssembly module
@@ -427,7 +442,7 @@ class Codeling:
         return sns(ID=self.json['ID'], score=score, desc=desc + msg, fuel=fuel,
             t_run=t_run)
     
-    def _score_LEB128_val(self, val) -> 'SimpleNamespace':
+    def _score_LEB128_val(self, val: int, lenpen: int) -> 'SimpleNamespace':
         self.reset_hdr()
         self.set_inp(val.to_bytes(4, 'little'))
         self.clear_out()
@@ -455,7 +470,7 @@ class Codeling:
         if len(out) == 0:
             desc += ':-'
         else:
-            score += 0x100
+            score += 0x200
             graded, graded_end = '', ''
             L = len(out)
             diff = L - len(targ)
@@ -473,6 +488,9 @@ class Codeling:
                     if o == 0x00:
                         graded += 'Z'      # (Z)ero
                         score += 0x20
+                    elif o == 0x0b:
+                        graded += 'E'      # (E)nd
+                        score += 0x40
                     else:
                         graded += 'M'      # (M)atch
                         score += 0x80
@@ -482,35 +500,61 @@ class Codeling:
                     
             desc += ':' + graded + graded_end
         
-        score -= round(len(self.json['code']) / 2)
+        score -= lenpen * round(len(self.json['code']) / 2)
         return sns(ID=self.json['ID'], score=score, desc=desc, fuel=fuel,
-            t_run=t_run)
+            t_run=t_run, out=out)
     
-    def score_LEB128(self) -> 'SimpleNamespace':
-        """Penalties: -0x01 for every byte of code length, -0x08 for every 
-        wrong byte written (or not written) to 'out', -0x40 for overwriting the 
-        header or a runtime exception (incl running out of fuel). Reward: 
-        +0x100 when there is any output to 'out' plus +0x80 for every correct 
-        non-zero byte written to 'out' (reduced to +0x20 for 0x00 bytes). 
-        Summed up over 8 test values."""
-        
+    def _score_LEB128(self, lenpen: int) -> 'SimpleNamespace':
         total = sns(ID=self.json['ID'], score=0, desc='', fuel=0, t_run=0)
         desc = []
-        vals = (0x1b, 0x3f, 0x40, 0x7f, 0x80, 0x12345, 0x7ffffff, 0x8000000)
+        outs = set()
+        vals = (0x0c, 0x1b, 0x3f, 0x40, 0x5b, 0x7f, 0x80, 0x9f, 
+                0xac, 0x12345, 0x23456, 0x45678,
+                0x5c3d123, 0x7ffffff, 0x8000000, 0x94bb765)
+        
         for val in vals:
-            retval = self._score_LEB128_val(val)
+            retval = self._score_LEB128_val(val, lenpen)
             total.score += retval.score
             total.fuel = retval.fuel
             total.t_run += retval.t_run
             desc.append(retval.desc)
+            outs.add(retval.out.hex())
         
-        total.desc = ' '.join(desc)
+        n = len(outs)
+        total.score += 0x100 * (n-1)
+        total.desc = f"n={n} " + ' '.join(desc)
         return total
+    
+    def score_LEB128(self) -> 'SimpleNamespace':
+        """Penalties: -0x01 for every byte of code length, -0x08 for every 
+        wrong byte written to 'out' (or missing when it should have been 
+        written), -0x40 for overwriting the header or a runtime exception (incl 
+        running out of fuel). Rewards: +0x100 when there is any output to 'out' 
+        plus +0x80 for every correct non-zero byte written to 'out' (reduced to 
+        +0x20 for 0x00 'zero' bytes and +0x40 for 0x0b 'end' bytes). Summed up 
+        over 16 test values. A final reward +0x200*(n-1) is awarded for the 
+        number n of different output strings across all test values. 
+        Description key: i = insertion, d = deletion, x = substition, Z = 
+        matching 0x00 zero byte, E = matching 0x0b end byte, M = matching 
+        non-zero non-end byte"""
+        
+        return self._score_LEB128(lenpen=1)
+    
+    def score_LEB128_nolen(self) -> 'SimpleNamespace':
+        """Same as LEB128 except no penalty for code length"""
+        
+        return self._score_LEB128(lenpen=0)
     
     def score(self) -> 'SimpleNamespace':
         # generation
         t_gen = time.time()
-        self._deferred_init()
+        
+        try:
+            self._deferred_init()
+        except RuntimeError:
+            return sns(ID=self.json['ID'],
+                t_gen=(time.time() - t_gen), t_valid=0, t_run=0, t_score=0,
+                fuel=0, score=-0xff, status='reject', desc='GENERATION ERROR')
         
         wasm_fname = self._init_wasm_fname
         if wasm_fname is None:
@@ -530,7 +574,7 @@ class Codeling:
             t_score = time.time()
             res = sns(ID=self.json['ID'], score=-0x80,
                       desc='VALIDATION ERROR\n' + comment(str(e)),
-                      t_run=0.0, fuel=0)
+                      fuel=0, t_run=0.0)
         else:
             # scoring (includes running)
             t_score = time.time()
@@ -592,8 +636,8 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        #for r in map(score_Codeling, cdl_gtor):
-        for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
+        for r in map(score_Codeling, cdl_gtor):
+        #for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -696,6 +740,7 @@ def uniq(cfg: 'Config'):
         seen[cdl.json['code']] = json_fname
     
     print(f"# Making '{cfg.outdir}' unique ...")
+    n_files = 0
     for json_fname in all_json_fnames(cfg.outdir):
         cdl = Codeling(cfg, json_fname=json_fname)
         code = cdl.json['code']
@@ -705,6 +750,9 @@ def uniq(cfg: 'Config'):
             os.remove(json2wasm(json_fname))
         else:
             seen[code] = json_fname
+            n_files += 1
+    
+    print(f"# {n_files} files left in '{cfg.outdir}'")
 
 
 def LEB128_test():
@@ -712,7 +760,7 @@ def LEB128_test():
                 0x7ffffff, 0x8000000,
                 0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
                 0xffffffbf, 0xffffffc0, 0xffffffff,
-                0x1b, 0x3f, 0x40, 0x7f, 0x80, 0x12345, 0x7ffffff, 0x8000000):
+                *TEST_VALS):
         
         b = util.LEB128(util.unsigned2signed(i32, 32))
         bs = util.ByteStream(b)
@@ -791,7 +839,7 @@ def main():
     defaults = (
         ('length', 5),
         ('fuel', 50),
-        ('scfn', 'LEB128'),
+        ('scfn', 'LEB128_nolen'),
         ('mtfn', 'ins'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
