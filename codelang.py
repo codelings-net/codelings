@@ -1,6 +1,6 @@
 import util
 import random
-from copy import copy
+from copy import copy, deepcopy
 
 
 class Instr:
@@ -977,6 +977,46 @@ class Function:
         self.index = []
         add_block(self.L0_blk)
     
+    def random_region(self, length: int):
+        """
+        Find a random region of at least `length` instructions consisting of 
+        non-block instructions and whole blocks
+        
+        The region does *not* need to be stack-neutral (pop-push != 0) 
+        
+        Returns (block, start, end) where the region consists of instructions
+        block.content[start] through to block.content[end-1]
+        
+        Returns None if there is no such region
+        
+        The initial dummy `FnStart` and the terminal `end` instruction at the 
+        end of the function are never part of the region
+        """
+        for L in range(length, self.length):
+            # [self.length] is the terminal `end` at the end of the function
+            # we want the last start to be L before that
+            # +1 because range(3) is (0, 1, 2)
+            starts = [i for i in range(1, self.length-L+1)]
+            random.shuffle(starts)
+            
+            for start in starts:
+                s, s_blk, sp_blk, _ = self.index[start]         # s = start
+                e, e_blk, ep_blk, _ = self.index[start+L-1]     # e = end
+                
+                # too complicated for how rare it is, skipped
+                if type(s) is ElseInstr:
+                    continue
+                
+                if type(s) is BlockInstr: s, s_blk = s_blk, sp_blk
+                if type(e) is EndInstr: e, e_blk = e_blk, ep_blk
+                
+                if s_blk != e_blk:
+                    continue
+                
+                return (s_blk, s.blk_i, e.blk_i+1)
+        
+        return (None, None, None)
+    
     def random_stack_neutral_region(self, length: int):
         """
         Find a random stack-neutral (pop-push = 0) region of at least `length`
@@ -1016,7 +1056,7 @@ class Function:
                 
                 return (s_blk, s.blk_i, e.blk_i+1)
         
-        return None
+        return (None, None, None)
     
     def random_instr(self):
         """
@@ -1077,7 +1117,7 @@ class Function:
         except IndexError:
             return False
         
-        # there always is exactly 1 match, any exception here is a bug
+        # there's always exactly 1 match, any exception here is a bug
         cl = next(c for c in Function.instr_classes if i.mnemonic in c)
         
         new_i = RIS_mnemonic2instr[random.choice(list(cl - {i.mnemonic}))]
@@ -1126,6 +1166,14 @@ class Function:
         
         The `length` parameter is ignored.
         """
+        def filter_fn(i):
+            return type(i) is BlockInstr
+        
+        try:
+            i = self.random_instr_filter(filter_fn)[0]
+        except IndexError:
+            return False
+        
         return False
     
     def mutator_ins_blk(self, length: int) -> bool:
@@ -1170,7 +1218,10 @@ class Function:
         """
         return False
     
-    def mutator_del(self, length: int) -> bool:
+    def mutator_del(self, length: int = None,
+                    blk: CodeBlock = None,
+                    start: int = None,
+                    end: int = None) -> bool:
         """
         Delete several non-block instructions and/or whole blocks, but do not 
         add any new ones. The deleted region must be stack-neutral 
@@ -1178,18 +1229,26 @@ class Function:
         
         At least `length` instructions are deleted.
         """
-        try:
+        if blk is None or start is None or end is None:
+            if length is None:
+                raise RuntimeError("Need either length or blk, start, end!")
+            
             blk, start, end = self.random_stack_neutral_region(length)
-        except TypeError:
+        
+        if blk is None:
             return False
         
         # this boldly ignores a few errors due to CodeBlock.any_OK_after
         # (too complicated to handle correctly for how rare they are)
         del(blk.content[start:end])
         
+        # heads up: self.length is now wrong, but no longer needed
         return True
     
-    def mutator_ins(self, length: int) -> bool:
+    def mutator_ins(self, length: int,
+                    blk: CodeBlock = None,
+                    start: int = None,
+                    targ: int = None) -> bool:
         """
         Insert several new non-block instructions and/or whole blocks, leaving 
         existing instructions intact. The inserted region must be stack-neutral 
@@ -1197,22 +1256,25 @@ class Function:
         
         At least `length` instructions are inserted.
         """
-        prev, blk = self.random_instr()
+        if blk is None or start is None or targ is None:
+            prev_instr, blk = self.random_instr()
+            start = prev_instr.blk_i+1
+            targ = prev_instr.stack_after
+        else:
+            prev_instr = blk.content[start-1]
         
         old_length = self.length
         old_blk = copy(blk)
         old_content_len = len(blk.content)
-        i = prev.blk_i+1
-        rest = blk.content[i:]
-        del(blk.content[i:])
+        rest = blk.content[start:]
+        del(blk.content[start:])
         
-        targ = prev.stack_after
         blk.restr_end = True
-        if blk.any_OK_after is not None and i <= blk.any_OK_after:
+        if blk.any_OK_after is not None and start <= blk.any_OK_after:
             blk.any_OK_after = None
         
         self.cur_blk = blk
-        self.last_instr = prev
+        self.last_instr = prev_instr
         self.new_blks_OK = True
         self.restr_end_OK = False
         self.creative_OK = True
@@ -1240,6 +1302,12 @@ class Function:
         
         At least `length` instructions are duplicated.
         """
+        blk, start, end = self.random_stack_neutral_region(length)
+        if blk is None:
+            return False
+        
+        blk.content[end:end] = deepcopy(blk.content[start:end])
+        return True
     
     def mutator_cp(self, length: int) -> bool:
         """
@@ -1249,7 +1317,16 @@ class Function:
         
         At least `length` instructions are copied.
         """
-        return False
+        src_blk, start, end = self.random_stack_neutral_region(length)
+        if src_blk is None:
+            return False
+        
+        prev_instr, dst_blk = self.random_instr()
+        i = prev_instr.blk_i+1
+        
+        # ignoring errors due to the stack dipping below zero in some cases
+        dst_blk.content[i:i] = deepcopy(src_blk.content[start:end])
+        return True
     
     def mutator_mv(self, length: int) -> bool:
         """
@@ -1290,9 +1367,15 @@ class Function:
         stack-neutral (pop-push != 0).
         
         At least `length` instructions get overwritten. The newly generated 
-        region may be shorter than the one it replaced.
+        region may be shorter (or longer) than the one it replaced.
         """
-        return False
+        blk, start, end = self.random_region(length)
+        if blk is None:
+            return False
+        
+        targ = blk.content[end-1].stack_after
+        return (self.mutator_del(blk=blk, start=start, end=end) and \
+                self.mutator_ins(1, blk=blk, start=start, targ=targ))
     
     def mutate(self, method: str, length: int) -> bool:
         """
