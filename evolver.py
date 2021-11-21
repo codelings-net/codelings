@@ -74,8 +74,7 @@ def nice_now():
 
 
 def nice_now_UTC():
-    """
-    time.gmtime() sounds like GMT, but it's UTC under the hood:
+    """time.gmtime() sounds like GMT, but it's UTC under the hood:
     https://docs.python.org/3.8/library/time.html#time.gmtime
       " Convert a time expressed in seconds since the epoch to a struct_time
         in UTC in which the dst flag is always zero. "
@@ -102,9 +101,7 @@ class Codeling:
             gen0=None,
             mutate=None,
             deferred=False):
-        """
-        Deferred Initialisation
-        - - - - - - - - - - - -
+        """Deferred Initialisation
         
         deferred=True is used by the parent process to shift most of the load
         onto child processes in the pool. When Codeling.score() is called from
@@ -179,8 +176,7 @@ class Codeling:
         self._json_fname = fname
     
     def wasm_bytes(self) -> bytes:
-        """
-        XXX TODO UPDATE THIS
+        """XXX TODO UPDATE THIS
         
         See the long comment at the beginning of this file for an overview
         (section "Analysis of template.wasm")
