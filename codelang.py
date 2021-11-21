@@ -4,8 +4,7 @@ from copy import copy, deepcopy
 
 
 class Instr:
-    """
-    A single instruction within a WebAssembly (or CodeLang) program
+    """A single instruction within a WebAssembly (or CodeLang) program
     
     Used directly for simple instructions without an immediate and as a base 
     class for more complicated instructions
@@ -95,8 +94,7 @@ class Instr:
 
 
 class InstrWithImm(Instr):
-    """
-    Base class for instructions with immediates (bytes that follow the opcode)
+    """Base class for instructions with immediates (=bytes after the opcode)
     
     The immediate `imm` is initialised in Step 2 (see the docstring for Instr 
     on how instruction objects are initialised)
@@ -122,8 +120,7 @@ class InstrWithImm(Instr):
 
 
 class FnStart(Instr):
-    """
-    Dummy intruction inserted at the start of each function
+    """Dummy intruction inserted at the start of each function
     
     Instr.append_to() assumes that there is a last_instr. All blocks begin with 
     the block instruction (`block` | `loop` | `if`), but that leaves the 
@@ -137,8 +134,7 @@ class FnStart(Instr):
 
 
 class BlockInstr(InstrWithImm):
-    """
-    Block instructions: `block`, `loop` and `if`
+    """Block instructions: `block`, `loop` and `if`
     
     Instance variable:
     
@@ -226,8 +222,7 @@ class EndInstr(Instr):
 
 
 class BranchInstr(InstrWithImm):
-    """
-    The `br` and `br_if` instructions
+    """The `br` and `br_if` instructions
     
     Instance variable:
     
@@ -314,15 +309,13 @@ class CallInstr(InstrWithImm):
     """The `call` instruction"""
     
     def __init__(self, mnemonic: str, opcode: bytes):
-        """
-        pop and push depend on what function is called, so only initialised
+        """pop and push depend on what function is called, so only initialised
         in Step 2 (see the docstring for Instr for details)
         """
         super().__init__(mnemonic, opcode, None, None)
     
     def _append_OK(self, f: 'Function') -> bool:
-        """
-        stack size can only be tested once the signature of the function
+        """stack size can only be tested once the signature of the function
         to be called is known, i.e. once imm is known
         """
         return True
@@ -350,8 +343,7 @@ class CallInstr(InstrWithImm):
 
 
 class MemInstr(InstrWithImm):
-    """
-    Memory instructions:
+    """Memory instructions:
     
       `i32.load`, `i32.load8_u`, `i32.store`, `i32.store8`
     
@@ -396,8 +388,7 @@ class MemInstr(InstrWithImm):
 
 
 class VarInstr(InstrWithImm):
-    """
-    Instructions dealing with local (and eventually global as well) variables: 
+    """Instructions dealing with local (and eventually also global) variables:
     
       `local.get`, `local.set` and `local.tee`
     
@@ -435,8 +426,7 @@ class VarInstr(InstrWithImm):
 
 
 class ConstInstr(InstrWithImm):
-    """
-    The `i32.const` instruction
+    """The `i32.const` instruction
     
     Instance variable:
     
@@ -465,7 +455,7 @@ class ConstInstr(InstrWithImm):
         return super().desc() + f"   val={self.val}"
 
 
-"""
+"""\
 The Reduced Instruction Set (RIS)
 - - - - - - - - - - - - - - - - -
 
@@ -588,8 +578,7 @@ RIS_opcode2instr = {int.from_bytes(i.opcode, 'big'):i for i in RIS_instrs}
 RIS_mnemonic2instr = {i.mnemonic:i for i in RIS_instrs}
 
 class CodeBlock(Instr):
-    """
-    A block of WebAssembly code
+    """A block of WebAssembly code
     
     Used directly for `block` and `loop` blocks and as a base class for `if` 
     and `else` blocks (which are more complicated because `else` blocks are 
@@ -620,8 +609,7 @@ class CodeBlock(Instr):
                  instr0: 'Instr',
                  parent: 'CodeBlock',
                  fn_targ: int = None):
-        """
-        Two ways of calling this constructor:
+        """Two ways of calling this constructor:
         
         1. Level 0 block (function level):
            
@@ -693,8 +681,7 @@ class CodeBlock(Instr):
 
 
 class IfBlock(CodeBlock):
-    """
-    The `if` block
+    """The `if` block
     
     Instance variables:
     
@@ -723,8 +710,7 @@ class IfBlock(CodeBlock):
 
 
 class ElseBlock(CodeBlock):
-    """
-    The `else` block
+    """The `else` block
     
     Unlike all other blocks, the `else` block is not inserted into any 
     CodeBlock.content and instead is only contained in the parent `if` block's 
@@ -764,7 +750,8 @@ class ElseBlock(CodeBlock):
 
 
 class Function:
-    """
+    """A WebAssembly function
+    
     - Generate random functions that pass WebAssembly validation
     
     - Parse existing functions and mutate them
@@ -794,8 +781,7 @@ class Function:
     
     """
     def __init__(self, gen0=None, parse=None):
-        """
-        Two ways of calling this constructor:
+        """Two ways of calling this constructor:
         
         1. Generate a new function from scratch ("generation 0"):
            
@@ -921,8 +907,7 @@ class Function:
         self.bs = None
     
     def verify(self) -> bool:
-        """
-        Typically called after a mutation
+        """Typically called after a mutation
         
         Verifies that the function passes validation, in which case returns 
         True (and False otherwise)
@@ -935,8 +920,7 @@ class Function:
         return True
     
     def build_index(self):
-        """
-        Build self.index = a flat list of all instructions
+        """Build self.index = a flat list of all instructions
         
         Each entry is:
         
@@ -978,8 +962,7 @@ class Function:
         add_block(self.L0_blk)
     
     def random_region(self, length: int):
-        """
-        Find a random region of at least `length` instructions consisting of 
+        """Find a random region of at least `length` instructions consisting of 
         non-block instructions and whole blocks
         
         The region does *not* need to be stack-neutral (pop-push != 0) 
@@ -1018,9 +1001,9 @@ class Function:
         return (None, None, None)
     
     def random_stack_neutral_region(self, length: int):
-        """
-        Find a random stack-neutral (pop-push = 0) region of at least `length`
-        instructions consisting of non-block instructions and whole blocks
+        """Find a random stack-neutral (pop-push = 0) region of at least 
+        `length` instructions consisting of non-block instructions and whole 
+        blocks
         
         Returns (block, start, end) where the region consists of instructions
         block.content[start] through to block.content[end-1]
@@ -1059,8 +1042,7 @@ class Function:
         return (None, None, None)
     
     def random_instr(self):
-        """
-        Find a random instruction
+        """Find a random instruction
         
         Returns (instr, blk) where
         
@@ -1080,8 +1062,7 @@ class Function:
         return (instr, blk)
     
     def random_instr_filter(self, filter_fn):
-        """
-        Find a randomly chosen instruction from a filtered list
+        """Find a randomly chosen instruction from a filtered list
         of instructions that match filter_fn(instr)
         
         Returns the full index entry for that instruction, i.e.
@@ -1101,10 +1082,9 @@ class Function:
         {'i32.shl', 'i32.shr_u', 'i32.rotl', 'i32.rotr'})
     
     def mutator_mut_instr(self, length: int) -> bool:
-        """
-        Mutate a single non-control instruction to an instruction in the same 
-        class and with the same net effect on the stack (i.e. same pop-push). 
-        Immediates (if any) are retained.
+        """Mutate a single non-control instruction to an instruction 
+        in the same class and with the same net effect on the stack
+        (i.e. same pop-push). Immediates (if any) are retained.
         
         The `length` parameter is ignored.
         """
@@ -1128,10 +1108,9 @@ class Function:
         return True
     
     def mutator_mut_imm(self, length: int) -> bool:
-        """
-        Mutate a single instruction immediate by regenerating it from scratch.
-        Only used with instructions where changing the immediate will have no
-        effect on the stack.
+        """Mutate a single instruction immediate by regenerating it from 
+        scratch. Only used with instructions where changing the immediate
+        will have no effect on the stack.
         
         The `length` parameter is ignored.
         """
@@ -1154,8 +1133,7 @@ class Function:
         return False
     
     def mutator_del_block(self, length: int) -> bool:
-        """
-        Delete a single block instruction (`block`, `loop` or `if`) + its 
+        """Delete a single block instruction (`block`, `loop` or `if`) and its 
         corresponding `end`. Instructions inside the block are retained and 
         simply moved down a level. For an `if` block with an `else` section, 
         one of the two sections is picked at random and retained, and the other 
@@ -1166,20 +1144,19 @@ class Function:
         
         The `length` parameter is ignored.
         """
-        def filter_fn(i):
+        def filter_blk(i):
             return type(i) is BlockInstr
         
         try:
-            i = self.random_instr_filter(filter_fn)[0]
+            instr, blk, parent_blk, _ = self.random_instr_filter(filter_blk)
         except IndexError:
             return False
         
         return False
     
     def mutator_ins_blk(self, length: int) -> bool:
-        """
-        Insert a single new block instruction (`block`, `loop` or `if`) + its 
-        corresponding `end` around several existing non-block instructions 
+        """Insert a single new block instruction (`block`, `loop` or `if`) and 
+        its corresponding `end` around several existing non-block instructions 
         and/or whole blocks. Branch instructions inside the newly created block 
         are adjusted. For `if` blocks (which have pop=1), a series of random 
         instructions is prepended to increase the stack by 1. For `if` blocks 
@@ -1192,27 +1169,24 @@ class Function:
         return False
     
     def mutator_del_else(self, length: int) -> bool:
-        """
-        Find an `if` block that has an `else` section but does not need it, and 
-        delete the `else` section.
+        """Find an `if` block that has an `else` section but does not need it, 
+        and delete the `else` section.
         
         The `length` parameter is ignored.
         """
         return False
     
     def mutator_ins_else(self, length: int) -> bool:
-        """
-        Find an `if` block that does not have an `else` section and generate an 
-        `else` section for it filled with random new instructions.
+        """Find an `if` block that does not have an `else` section and generate 
+        an `else` section for it filled with random new instructions.
         
         The new `else` section will be at least `length` instructions long.
         """
         return False
     
     def mutator_swap_else(self, length: int) -> bool:
-        """
-        Find an `if` block that has an `else` section and swap the content of 
-        the two sections.
+        """Find an `if` block that has an `else` section and swap the content 
+        of the two sections.
         
         The `length` parameter is ignored.
         """
@@ -1222,9 +1196,8 @@ class Function:
                     blk: CodeBlock = None,
                     start: int = None,
                     end: int = None) -> bool:
-        """
-        Delete several non-block instructions and/or whole blocks, but do not 
-        add any new ones. The deleted region must be stack-neutral 
+        """Delete several non-block instructions and/or whole blocks, but
+        do  not add any new ones. The deleted region must be stack-neutral
         (pop-push = 0).
         
         At least `length` instructions are deleted.
@@ -1249,10 +1222,9 @@ class Function:
                     blk: CodeBlock = None,
                     start: int = None,
                     targ: int = None) -> bool:
-        """
-        Insert several new non-block instructions and/or whole blocks, leaving 
-        existing instructions intact. The inserted region must be stack-neutral 
-        (pop-push = 0).
+        """Insert several new non-block instructions and/or whole blocks, 
+        leaving existing instructions intact. The inserted region must be 
+        stack-neutral (pop-push = 0).
         
         At least `length` instructions are inserted.
         """
@@ -1295,10 +1267,9 @@ class Function:
         return True
     
     def mutator_dup(self, length: int) -> bool:
-        """
-        Duplicate a series of non-block instructions and/or whole blocks, i.e. 
-        create a copy immediately after the original. The duplicated region 
-        must be stack-neutral (pop-push = 0).
+        """Duplicate a series of non-block instructions and/or whole blocks, 
+        i.e. create a copy immediately after the original. The duplicated 
+        region must be stack-neutral (pop-push = 0).
         
         At least `length` instructions are duplicated.
         """
@@ -1310,10 +1281,9 @@ class Function:
         return True
     
     def mutator_cp(self, length: int) -> bool:
-        """
-        Copy a series of non-block instructions and/or whole blocks to a random 
-        new location elsewhere in the function. The copied region must be stack 
-        neutral (pop-push = 0).
+        """Copy a series of non-block instructions and/or whole blocks 
+        to a random new location elsewhere in the function. The copied region
+        must be stack neutral (pop-push = 0).
         
         At least `length` instructions are copied.
         """
@@ -1329,31 +1299,28 @@ class Function:
         return True
     
     def mutator_mv(self, length: int) -> bool:
-        """
-        Move a series of non-block instructions and/or whole blocks to a random 
-        new location elsewhere in the function. The moved region must be stack 
-        neutral (pop-push = 0).
+        """Move a series of non-block instructions and/or whole blocks
+        to a random new location elsewhere in the function. The moved region
+        must be stack neutral (pop-push = 0).
         
         At least `length` instructions are moved.
         """
         return False
     
     def mutator_reorder(self, length: int) -> bool:
-        """
-        Move a series of non-block instructions and/or whole blocks to a random 
-        new location within their current block. The moved region does not need 
-        to be stack-neutral (pop-push != 0), but stack size may never dip below 
-        zero.
+        """Move a series of non-block instructions and/or whole blocks
+        to a random new location within their current block. The moved region
+        does not need to be stack-neutral (pop-push != 0), but stack size
+        may never dip below zero.
         
         At least `length` instructions are moved.
         """
         return False
     
     def mutator_swap(self, length: int) -> bool:
-        """
-        Find two series of non-block instructions and/or whole blocks that have 
-        the same net effect on the stack (pop-push) and swap them. Stack size 
-        may never dip below zero.
+        """Find two series of non-block instructions and/or whole blocks that 
+        have the same net effect on the stack (pop-push) and swap them.
+        Stack size may never dip below zero.
         
         The longer of two regions (or both if they are of equal length) is 
         at least `length` instructions long.
@@ -1361,10 +1328,9 @@ class Function:
         return False
     
     def mutator_overwrite(self, length: int) -> bool:
-        """
-        Overwrite several non-block instructions and/or whole blocks with newly 
-        generated instructions. The overwritten region does *not* need to be 
-        stack-neutral (pop-push != 0).
+        """Overwrite several non-block instructions and/or whole blocks with 
+        newly generated instructions. The overwritten region does *not* need
+        to be stack-neutral (pop-push != 0).
         
         At least `length` instructions get overwritten. The newly generated 
         region may be shorter (or longer) than the one it replaced.
@@ -1378,8 +1344,7 @@ class Function:
                 self.mutator_ins(1, blk=blk, start=start, targ=targ))
     
     def mutate(self, method: str, length: int) -> bool:
-        """
-        Mutate the current function
+        """Mutate the current function
         
         Params:
         
