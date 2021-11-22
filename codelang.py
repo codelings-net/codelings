@@ -52,7 +52,7 @@ class Instr:
         return (self.pop <= f.last_instr.stack_after or self._any_OK(f))
     
     def _copy(self) -> 'Instr':
-        # the CodeBlock pseudo-instruction returns self
+        # needed because the CodeBlock pseudo-instruction returns self
         return copy(self)
     
     def _finish_init(self, f: 'Function') -> bool:
@@ -69,6 +69,13 @@ class Instr:
         self.fn_i = prev.fn_i + 1
         self.blk_i = prev.blk_i + 1
         return True
+    
+    def _copy_init(self, i: 'Instr'):
+        # WARNING: this is a dirty hack
+        # you'd better know what you're doing when calling this
+        self.stack_after = i.stack_after
+        self.fn_i = i.fn_i
+        self.blk_i = i.blk_i
     
     def _append(self, f: 'Function'):
         f._append_instr(self)
@@ -502,10 +509,11 @@ This then increases the weighted sum of sinks to:
 
 so let's pick 16x for the sources so the final balance is +32 vs -42.
 """
-# `else` and `end` need to be called directly when creative_OK is set, 
+# the following instructions sometimes need to be used directly
 # so need named variables outside of RIS_xxx
 else_instr = ElseInstr('else', b'\x05', 0, 0)
 end_instr = EndInstr('end', b'\x0b', 0, 0)
+drop_instr = Instr('drop', b'\x1a', 1, 0)
 
 # ( weight0, (instr00, instr01, ...),
 #   weight1, (instr10, instr11, ...), ...)
@@ -535,7 +543,7 @@ RIS = (
         BranchInstr('br_if l', b'\x0d', 1, 0),
         ReturnInstr('return', b'\x0f', 0, 0),
         CallInstr('call x', b'\x10'),
-        Instr('drop', b'\x1a', 1, 0),
+        drop_instr,
         Instr('select', b'\x1b', 3, 1),
         VarInstr('local.set x', b'\x21', 1, 0),
         VarInstr('local.tee x', b'\x22', 1, 1),
@@ -665,6 +673,9 @@ class CodeBlock(Instr):
     def set_fn_i(self, i: int) -> bool:
         self.fn_i = i
     
+    def del_level(self, i: int) -> bool:
+        del(self.blocks[i])
+    
     def dump(self):
         if self.is_L0:
             spacer = ''
@@ -702,6 +713,11 @@ class IfBlock(CodeBlock):
     def b(self):
         e = b'' if self.else_blk is None else self.else_blk.b()
         return super().b() + e
+    
+    def del_level(self, i: int) -> bool:
+        super().del_level(i)
+        if self.else_blk is not None:
+            self.else_blk.del_level(i)
     
     def dump(self):
         yield from super().dump()
@@ -1139,8 +1155,10 @@ class Function:
         one of the two sections is picked at random and retained, and the other 
         deleted. Branch instructions inside the block are adjusted and those 
         branching to the deleted block are removed altogether (with `br_if` 
-        replaced by a `drop`). For `if` blocks (which have pop=1) a single 
-        `drop` instruction is prepended.
+        replaced by a `drop`; for `br` several `drop` instructions may be added 
+        if the stack size is greater than the block target and the rest of the 
+        block is deleted). For `if` blocks (which have pop=1) a single `drop` 
+        instruction is prepended.
         
         The `length` parameter is ignored.
         """
@@ -1152,7 +1170,86 @@ class Function:
         except IndexError:
             return False
         
-        return False
+        ##### XXX TODO
+        """TODO: for `br` several `drop` instructions may be added 
+        if the stack size is greater than the block target and the rest of the 
+        block is deleted). For `if` blocks (which have pop=1) a single `drop` 
+        instruction is prepended."""
+        
+        self.dump()
+        print()
+        
+        if type(instr) is IfBlock and blk.else_blk is not None:
+            if random.choice([True, False]):
+                blk = blk.else_blk
+                instr = blk.content[0]
+        
+        level = len(blk.blocks) - 1
+        instrs = self.index[blk.content[0].fn_i + 2 : blk.content[-1].fn_i + 1]
+
+        print('del_block')
+        print(f"instr =", instr.desc())
+        print(f"level = {level}")
+        print(f"instrs:")
+        for i in instrs:
+            print(' '*4 + i[0].desc())
+        print()
+        
+        print('del_level on blk and its child blocks')
+        blk.del_level(level)
+        for bl_instr, bl_blk, _, _ in instrs:
+            if type(bl_instr) is not BlockInstr: continue
+            bl_blk.del_level(level)
+        print()
+        
+        print('BranchInstrs:')
+        for br_instr, br_blk, _, _ in instrs:
+            if type(br_instr) is not BranchInstr: continue
+            print(' '*4 + br_instr.desc())
+            dest_level = len(br_blk.blocks) - 1 - br_instr.dest
+            print(' '*4 + f"dest_level = {dest_level}")
+            print()
+            
+            if dest_level > level:
+                continue
+            
+            self.cur_blk = br_blk
+            self.last_instr = br_blk.content[br_instr.blk_i - 1]
+            
+            if dest_level < level:
+                br_instr.dest -= 1
+                #breakpoint()
+                assert br_instr._update_imm(self)   # should defo return True
+            elif dest_level == level:
+                if br_instr.mnemonic == 'br_if l':
+                    print('subst a `drop`')
+                    drop = copy(drop_instr)
+                    drop._copy_init(br_instr)
+                    br_blk.content[br_instr.blk_i] = drop
+                elif br_instr.mnemonic == 'br l':
+                    del(br_blk.content[br_instr.blk_i:])
+                    if self.last_instr.stack_after < br_blk.targ:
+                        raise RuntimeError('OOOOPS')
+                    else:
+                        print('appending `drop`s')
+                        while self.last_instr.stack_after > br_blk.targ:
+                            drop_instr.append_to(self)
+            
+            self.cur_blk = None
+        
+        print('after BranchInstr surgery')
+        self.dump()
+        print()
+        
+        dst = blk.blk_i
+        del(parent_blk.content[dst])
+        parent_blk.content[dst:dst] = blk.content[1:len(blk.content)-1]
+        
+        print('after block surgery')
+        self.dump()
+        print()
+        
+        return True
     
     def mutator_ins_blk(self, length: int) -> bool:
         """Insert a single new block instruction (`block`, `loop` or `if`) and 
