@@ -49,6 +49,16 @@ class Instr:
         return (f.cur_blk.any_OK_after < blk_i)
     
     def _append_OK(self, f: 'Function') -> bool:
+        if f.wind_down:
+            targ = f.cur_blk.temp_targ
+            if targ is None:
+                targ = f.cur_blk.targ
+            
+            diff = f.last_instr.stack_after - targ
+            if abs(diff) < abs(diff - self.pop + self.push):
+                if random.choice((True, False)):
+                    return False
+        
         return (self.pop <= f.last_instr.stack_after or self._any_OK(f))
     
     def _copy(self) -> 'Instr':
@@ -69,13 +79,6 @@ class Instr:
         self.fn_i = prev.fn_i + 1
         self.blk_i = prev.blk_i + 1
         return True
-    
-    def _copy_init(self, i: 'Instr'):
-        # WARNING: this is a dirty hack
-        # you'd better know what you're doing when calling this
-        self.stack_after = i.stack_after
-        self.fn_i = i.fn_i
-        self.blk_i = i.blk_i
     
     def _append(self, f: 'Function'):
         f._append_instr(self)
@@ -154,7 +157,7 @@ class BlockInstr(InstrWithImm):
         self.return_type = None
     
     def _append_OK(self, f: 'Function') -> bool:
-        return (super()._append_OK(f) and f.new_blks_OK)
+        return (super()._append_OK(f) and not f.wind_down)
     
     def _update_imm(self, f: 'Function') -> bool:
         if self.return_type is None:
@@ -193,8 +196,9 @@ class ElseInstr(Instr):
     def _append_OK(self, f: 'Function') -> bool:
         return (type(f.cur_blk) is IfBlock and f.cur_blk.else_blk is None and \
             not f.cur_blk.restr_end and \
+            (not f.wind_down or f.cur_blk.need_else) and \
             (f.last_instr.stack_after == f.cur_blk.targ or \
-            (self._any_OK(f) and f.last_instr.stack_after <= f.cur_blk.targ)))
+             (self._any_OK(f) and f.last_instr.stack_after <= f.cur_blk.targ)))
     
     def _finish_init(self, f: 'Function') -> bool:
         self.stack_after = 0
@@ -602,6 +606,7 @@ class CodeBlock(Instr):
                               (`end` only accepted when stack size == targ)
       br_targ: int          target for `br`s branching down to this block
                               (=targ except for `loop`, where br_targ=0)
+      temp_targ: int        temporary stack target for insertions etc
       content: list         instructions (and other blocks) within this block
       any_OK_after: int     index of the first `br` or `return` within content,
                               None => not issued yet; means "(almost) any 
@@ -661,6 +666,7 @@ class CodeBlock(Instr):
             self.is_L0 = False
             self.restr_end = False
         
+        self.temp_targ = None
         self.content = [instr0]
         self.any_OK_after = None
     
@@ -748,9 +754,11 @@ class ElseBlock(CodeBlock):
         
         self.stack_after = parent.stack_after
         self.blk_i = parent.blk_i
+        self.fn_i = parent.fn_i
         
         self.targ = parent.targ
         self.br_targ = parent.br_targ
+        self.temp_targ = parent.temp_targ
         self.blocks = parent.blocks[:-1] + [self]
         self.is_L0 = parent.is_L0
         self.restr_end = parent.restr_end
@@ -783,13 +791,14 @@ class Function:
       last_instr: 'Instr'   last instruction that was appended
       cur_blk: 'CodeBlock'  block to which the next instruction will be added
                               (None = the function has been completed)
-      
-      new_blks_OK: bool     OK to start new blocks?
+      wind_down: bool       if set, do not start any new blocks and only add
+                              half the instructions that change the stack size
+                              away from blk.targ (or blk.temp_targ)
       restr_end_OK: bool    OK to issue the final `end` for restricted blocks?
                               ('restricted' means CodeBlock.restr_end=True)
       creative_OK: bool     OK to creatively add/substitute instructions?
                               (e.g. `end` -> `else` in an `if` block that needs
-                               an `else`, or `end` after a `br`)
+                               an `else`, or add an `end` after a `br`)
       length: int           length in number of instructions
       bs: util.ByteStream   stream of bytes to parse (only used for parsing)
       index: list           flat list of all instructions
@@ -837,7 +846,7 @@ class Function:
         self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
         self.last_instr = self.L0_blk.content[-1]
         self.cur_blk = self.L0_blk
-        self.new_blks_OK = None
+        self.wind_down = None
         self.restr_end_OK = None
         self.creative_OK = None
         self.length = 0
@@ -895,19 +904,19 @@ class Function:
             self.length += 1
     
     def generate(self, length: int):
-        self.new_blks_OK = True
+        self.wind_down = False
         self.restr_end_OK = False
         self.creative_OK = True
         while self.length < length:
             self._generate_instr()
         
-        self.new_blks_OK = False
+        self.wind_down = True
         self.restr_end_OK = True
         while self.cur_blk is not None:
             self._generate_instr()
     
     def parse(self, code: bytes):
-        self.new_blks_OK = True
+        self.wind_down = False
         self.restr_end_OK = True
         self.creative_OK = False
         self.bs = util.ByteStream(code)
@@ -1180,7 +1189,7 @@ class Function:
         print()
         
         if type(instr) is IfBlock and blk.else_blk is not None:
-            if random.choice([True, False]):
+            if random.choice((True, False)):
                 blk = blk.else_blk
                 instr = blk.content[0]
         
@@ -1224,7 +1233,7 @@ class Function:
                 if br_instr.mnemonic == 'br_if l':
                     print('subst a `drop`')
                     drop = copy(drop_instr)
-                    drop._copy_init(br_instr)
+                    drop._finish_init(self)
                     br_blk.content[br_instr.blk_i] = drop
                 elif br_instr.mnemonic == 'br l':
                     del(br_blk.content[br_instr.blk_i:])
@@ -1344,16 +1353,18 @@ class Function:
         
         self.cur_blk = blk
         self.last_instr = prev_instr
-        self.new_blks_OK = True
+        self.wind_down = False
         self.restr_end_OK = False
         self.creative_OK = True
         while self.length - old_length < length:
             self._generate_instr()
         
-        self.new_blks_OK = False
+        self.wind_down = True
+        blk.temp_targ = targ
         while self.cur_blk != blk or self.last_instr.stack_after != targ:
             self._generate_instr()
         
+        blk.temp_targ = None
         blk.content += rest
         blk.restr_end = old_blk.restr_end
         if blk.any_OK_after is None and old_blk.any_OK_after is not None:
