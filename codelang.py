@@ -643,6 +643,8 @@ class CodeBlock(Instr):
             
             m = 'L0 block'
             super().__init__(mnemonic=m, opcode=None, pop=0, push=fn_targ)
+            self.blk_i = 'L0'
+            self.stack_after = self.push
             self.targ = fn_targ
             self.br_targ = fn_targ
             self.blocks = [self]
@@ -1066,21 +1068,26 @@ class Function:
         
         return (None, None, None)
     
-    def random_instr(self):
-        """Find a random instruction
+    def random_reachable_instr(self):
+        """Find a random reachable instruction
+        
+        Reachable instruction = one before or at its block's any_OK_after (if 
+        there is one, otherwise all instruction in the block are reachable).
         
         Returns (instr, blk) where
         
             instr = blk.content[instr.blk_i]
         
         If the instruction is an `end`, returns the whole block (along with its 
-        parental block)
+        parental block). May return the FnStart dummy instruction at the start 
+        of the function, but never the `end` at the very end of the function.        
+        """ 
+        reachable = [i for i in self.index \
+                     if (i[1].any_OK_after is None or \
+                         i[0].blk_i <= i[1].any_OK_after)]
         
-        May return the FnStart dummy instruction at the start of the function,
-        but never the `end` at the very end of the function
-        """
-        i = random.randrange(self.length)
-        instr, blk, parent_blk, _ = self.index[i]
+        del(reachable[-1])  # get rid of the final `end`
+        instr, blk, parent_blk, _ = random.choice(reachable)
         if type(instr) is EndInstr:
             instr, blk = blk, parent_blk
         
@@ -1160,14 +1167,16 @@ class Function:
     def mutator_del_block(self, length: int) -> bool:
         """Delete a single block instruction (`block`, `loop` or `if`) and its 
         corresponding `end`. Instructions inside the block are retained and 
-        simply moved down a level. For an `if` block with an `else` section, 
-        one of the two sections is picked at random and retained, and the other 
-        deleted. Branch instructions inside the block are adjusted and those 
-        branching to the deleted block are removed altogether (with `br_if` 
-        replaced by a `drop`; for `br` several `drop` instructions may be added 
-        if the stack size is greater than the block target and the rest of the 
-        block is deleted). For `if` blocks (which have pop=1) a single `drop` 
-        instruction is prepended.
+        simply moved down a level. For `if` blocks (which have pop=1), a single 
+        `drop` instruction is prepended. For an `if` block with an `else` 
+        section, one of the two sections is picked at random and retained, and 
+        the other deleted.  Branch instructions inside the block are adjusted 
+        and those branching to the deleted block are removed altogether, with 
+        (1) `br_if` replaced by a `drop`, (2) for `br` the instruction itself 
+        and the rest of the block is deleted and then either several `drop` 
+        instructions are appended (if stack size > block target) or several 
+        newly generated ones (if stack size < block target) in order to get to 
+        get to the target level. 
         
         The `length` parameter is ignored.
         """
@@ -1179,47 +1188,42 @@ class Function:
         except IndexError:
             return False
         
-        ##### XXX TODO
-        """TODO: for `br` several `drop` instructions may be added 
-        if the stack size is greater than the block target and the rest of the 
-        block is deleted). For `if` blocks (which have pop=1) a single `drop` 
-        instruction is prepended."""
-        
-        self.dump()
-        print()
-        
-        if type(instr) is IfBlock and blk.else_blk is not None:
-            if random.choice((True, False)):
+        extra = []
+        if type(blk) is IfBlock:
+            self.cur_blk = parent_blk
+            self.last_instr = parent_blk.content[blk.blk_i - 1]
+            drop = copy(drop_instr)
+            assert drop._finish_init(self)
+            extra = [drop]
+            
+            if blk.else_blk is not None and random.choice((True, False)):
                 blk = blk.else_blk
                 instr = blk.content[0]
         
         level = len(blk.blocks) - 1
-        instrs = self.index[blk.content[0].fn_i + 2 : blk.content[-1].fn_i + 1]
-
-        print('del_block')
-        print(f"instr =", instr.desc())
-        print(f"level = {level}")
-        print(f"instrs:")
-        for i in instrs:
-            print(' '*4 + i[0].desc())
-        print()
+        skip_end = 1 if type(blk.content[-1]) is EndInstr else 0
+        instrs = self.index[blk.content[0].fn_i + 2 : \
+                            blk.content[-1].fn_i + 2 - skip_end]
         
-        print('del_level on blk and its child blocks')
         blk.del_level(level)
         for bl_instr, bl_blk, _, _ in instrs:
             if type(bl_instr) is not BlockInstr: continue
             bl_blk.del_level(level)
-        print()
         
-        print('BranchInstrs:')
         for br_instr, br_blk, _, _ in instrs:
-            if type(br_instr) is not BranchInstr: continue
-            print(' '*4 + br_instr.desc())
-            dest_level = len(br_blk.blocks) - 1 - br_instr.dest
-            print(' '*4 + f"dest_level = {dest_level}")
-            print()
+            if type(br_instr) is not BranchInstr:
+                continue
+            
+            # dest_level is the *old* absolute level, 0 means 'Level 0'
+            # (should have been len(blocks)-1 but called del_level(...) above)
+            dest_level = len(br_blk.blocks) - br_instr.dest
             
             if dest_level > level:
+                continue
+            
+            if br_instr not in br_blk.content:
+                # this instruction clearly followed an earlier `br`
+                # so it's already been deleted, skipping
                 continue
             
             self.cur_blk = br_blk
@@ -1227,37 +1231,40 @@ class Function:
             
             if dest_level < level:
                 br_instr.dest -= 1
-                #breakpoint()
-                assert br_instr._update_imm(self)   # should defo return True
+                assert br_instr._update_imm(self)
             elif dest_level == level:
                 if br_instr.mnemonic == 'br_if l':
-                    print('subst a `drop`')
                     drop = copy(drop_instr)
-                    drop._finish_init(self)
+                    assert drop._finish_init(self)
                     br_blk.content[br_instr.blk_i] = drop
                 elif br_instr.mnemonic == 'br l':
+                    if br_instr.blk_i <= br_blk.any_OK_after:
+                        br_blk.any_OK_after = None
+                    
+                    end = br_blk.content[-1]
                     del(br_blk.content[br_instr.blk_i:])
+                    
                     if self.last_instr.stack_after < br_blk.targ:
-                        raise RuntimeError('OOOOPS')
+                        # HACK: length=0 so no new blocks
+                        # (new blocks can't reach br_blk after their `end`
+                        #  because it's been deleted, so get an infinite loop)
+                        assert self.mutator_ins(length=0, blk=br_blk,
+                                                start=len(br_blk.content),
+                                                targ=br_blk.targ)
                     else:
-                        print('appending `drop`s')
                         while self.last_instr.stack_after > br_blk.targ:
                             drop_instr.append_to(self)
-            
-            self.cur_blk = None
-        
-        print('after BranchInstr surgery')
-        self.dump()
-        print()
+                    
+                    # `if` blocks with an `else` section haven't got an `end`
+                    if type(end) is EndInstr:
+                        br_blk.content.append(end)
         
         dst = blk.blk_i
         del(parent_blk.content[dst])
-        parent_blk.content[dst:dst] = blk.content[1:len(blk.content)-1]
+        parent_blk.content[dst:dst] = extra + \
+            blk.content[1 : len(blk.content)-skip_end]
         
-        print('after block surgery')
-        self.dump()
-        print()
-        
+        self.cur_blk = None
         return True
     
     def mutator_ins_blk(self, length: int) -> bool:
@@ -1335,15 +1342,15 @@ class Function:
         At least `length` instructions are inserted.
         """
         if blk is None or start is None or targ is None:
-            prev_instr, blk = self.random_instr()
+            prev_instr, blk = self.random_reachable_instr()
             start = prev_instr.blk_i+1
             targ = prev_instr.stack_after
         else:
             prev_instr = blk.content[start-1]
         
         old_length = self.length
-        old_blk = copy(blk)
         old_content_len = len(blk.content)
+        old_blk = copy(blk)
         rest = blk.content[start:]
         del(blk.content[start:])
         
@@ -1364,8 +1371,8 @@ class Function:
         while self.cur_blk != blk or self.last_instr.stack_after != targ:
             self._generate_instr()
         
-        blk.temp_targ = None
         blk.content += rest
+        blk.temp_targ = None
         blk.restr_end = old_blk.restr_end
         if blk.any_OK_after is None and old_blk.any_OK_after is not None:
             d = len(blk.content) - old_content_len
@@ -1399,7 +1406,7 @@ class Function:
         if src_blk is None:
             return False
         
-        prev_instr, dst_blk = self.random_instr()
+        prev_instr, dst_blk = self.random_reachable_instr()
         i = prev_instr.blk_i+1
         
         # ignoring errors due to the stack dipping below zero in some cases
