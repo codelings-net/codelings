@@ -4,6 +4,7 @@ import codelang
 import util
 import config
 
+import colored
 import hexdump
 import wasmtime
 
@@ -11,6 +12,8 @@ from types import SimpleNamespace as sns
 
 import argparse
 import ctypes
+import collections
+import difflib
 import glob
 import json
 import multiprocessing
@@ -293,12 +296,13 @@ class Codeling:
         targ = 0
         f = codelang.Function(gen0=(targ, L))
         
+        desc = f"Codeling.gen0() -length {L}" 
         self.json = {
             'ID': ID,
             'code': f.b().hex(),
             'created': nice_now_UTC(),
             'parents': [],
-            'created_by': self.cfg.this_script_release + ' Codeling.gen0()'}
+            'created_by': self.cfg.this_script_release + ' ' + desc}
     
     def mutate(self, ID: str, L: int, json_source: str) -> bool:
         source_cdl = Codeling(self.cfg, json_fname=json_source)
@@ -632,8 +636,8 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(score_Codeling, cdl_gtor):
-        #for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
+        #for r in map(score_Codeling, cdl_gtor):
+        for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
             n_scored += 1
             if r.status == 'accept':
                 n_accepted += 1
@@ -750,6 +754,146 @@ def uniq(cfg: 'Config'):
     
     print(f"# {n_files} files left in '{cfg.outdir}'")
 
+
+def dump_colour_diff(width, new_f, old_f=None):
+    line_so_far = 0
+    
+    def coloured_print(mode, s: str):
+        nonlocal line_so_far
+        
+        out = s             # default = match ('M')
+        if mode == 'd':     # deletion
+            out = colored.stylize(s, colored.bg('dark_red_1'))
+        elif mode == 'i':   # insertion
+            out = colored.stylize(s, colored.bg('dark_green_1'))
+        
+        print(out, end='')
+        line_so_far += len(s)
+    
+    def item_type(item: str):
+        if item[0] in (' ', 'M', '-', '+', 'S', 'N'):
+            return item[0]
+        elif item[-1] == '=':
+            return '='
+        else:
+            return 'V'
+    
+    spacer, spacer_type, spacer_mode = False, None, None
+    
+    def printer(mode, content):
+        nonlocal spacer, spacer_type, spacer_mode
+        nonlocal width, line_so_far
+        
+        for i in content:
+            i_type = item_type(i)
+            
+            if i_type == 'N':
+                spacer = ' '*(width - line_so_far)
+                coloured_print(spacer_mode, spacer)
+            elif spacer and spacer_type != i_type:
+                if 'M' in (mode, spacer_mode):
+                    coloured_print('M', spacer)
+                else:
+                    coloured_print(mode, spacer)
+            
+            if i_type == 'M':               # mnemonic
+                coloured_print(mode, i[1:])
+                spacer = ' '*(20 - len(i[1:]))
+            elif i_type in ('-', '+', 'V'): # pop, push, immediate value
+                coloured_print(mode, i)
+                spacer = ' '
+            elif i_type == 'S':             # stack size (aka stack_after)
+                coloured_print(mode, f"[{i[1:]}]")
+                spacer = '   '
+            elif i_type in ('=', ' '):      # immediate type, spacer
+                coloured_print(mode, i)
+                spacer = False
+            elif i_type == 'N':             # new line
+                print()
+                spacer = False
+                line_so_far = 0
+                
+            spacer_type = i_type
+            spacer_mode = mode
+    
+    def tidy_NL(diff):
+        nonlocal new_f, old_f
+        
+        #          0      1          2        3          4
+        # item = (tag, old_start, old_end, new_start, new_end)
+        d = [list(item) for item in diff.get_opcodes()]
+        
+        for i in range(1, len(d)):
+            if d[i][0] == 'delete' and d[i-1][0] == d[i+1][0] == 'equal':
+                j = 0
+                prev_old_start = d[i-1][1]
+                old_start = d[i][1]
+                old_end = d[i][2]
+                while (prev_old_start <= old_start-j-1 and \
+                       old_f[old_start-j-1] == old_f[old_end-j-1] and \
+                       old_f[old_start-j-1] != 'NL'):
+                    j += 1
+                
+                if j > 0:
+                    d[i-1][2] -= j      # old_end
+                    d[i-1][4] -= j      # new_end
+                    
+                    d[i][1:] = [val-j for val in d[i][1:]]
+                    
+                    d[i+1][1] -= j      # old_start
+                    d[i+1][3] -= j      # new_start
+        
+        return d
+    
+    if old_f is None:
+        printer('M', new_f)
+        return
+    
+    d = difflib.SequenceMatcher(None, old_f, new_f)
+    for tag, old_start, old_end, new_start, new_end in tidy_NL(d):
+        if tag == 'delete':
+            printer('d', old_f[old_start:old_end])
+        elif tag == 'equal':
+            printer('M', old_f[old_start:old_end])
+        elif tag == 'insert':
+            printer('i', new_f[new_start:new_end])
+        elif tag == 'replace':
+            printer('d', old_f[old_start:old_end])
+            printer('i', new_f[new_start:new_end])
+        else:
+            raise RuntimeError(f"uknown tag '{tag}'")
+
+
+def history(cfg: 'Config', json_fname: str):
+    dw = 25
+    fin = '-'*dw + ' FINAL VERSION ' + '-'*dw
+    width = len(fin)
+    
+    jsons = collections.deque([json_fname])
+    cdls = collections.deque()
+    while len(jsons) > 0:
+        json_fname = jsons.pop()
+        cdl = Codeling(cfg, json_fname=json_fname)
+        cdls.append(cdl)
+        jsons.extend(os.path.join(cfg.histdir, ID + '.json') \
+                     for ID in cdl.json['parents'])
+    
+    cdls.reverse()
+    prev_f = None
+    for cdl in cdls:
+        print(json.dumps(cdl.json, indent=3))
+        targ = 0
+        f = collections.deque()
+        for l in codelang.Function(parse=(cdl.b(), targ)).dump(tokens=True):
+            f.extend(l)
+        
+        f = list(f)
+        dump_colour_diff(width, f, prev_f)
+        print()
+        prev_f = f
+    
+    print(fin)
+    dump_colour_diff(width, f)
 
 def LEB128_test():
     for i32 in (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
@@ -899,6 +1043,17 @@ def main():
         else:
             raise argparse.ArgumentTypeError(f"'{s}' is not a directory")
     
+    def type_json(s: str):
+        for fs in (s, os.path.join(cfg.indir, s)):
+            if os.path.isfile(fs):
+                if fs.endswith('.json'):
+                    return fs
+                else:
+                    msg = f"'{fs}' does not end in '.json'"
+                    raise argparse.ArgumentTypeError(msg)
+        
+        raise argparse.ArgumentTypeError(f"'{s}': no such file")
+    
     parser = argparse.ArgumentParser(
         description=main.__doc__, epilog=textwrap.dedent(epilogue),
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -926,6 +1081,10 @@ def main():
         help=f"""Look at all codelings in '{cfg.outdir}' and remove those that 
         are duplicates of (i.e. have the same code as) codelings in 
         '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
+    cmds.add_argument('-history', type=type_json, metavar='json',
+        help=f"""Print the history of a particular codeling stored in the 
+        'json' file (NB must end in '.json') by recursively looking up its 
+        parents in '{cfg.histdir}'.""")
     
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
@@ -1016,6 +1175,9 @@ def main():
         gtor = gtor_concat(cfg, args.concat)
     elif args.uniq:
         uniq(cfg)
+        return
+    elif args.history:
+        history(cfg, args.history)
         return
     
     with open(cfg.template_file, "rb") as f:
