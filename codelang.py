@@ -97,10 +97,14 @@ class Instr:
         cp._append(f)
         return True
     
-    def desc(self):
-        return f"{self.fn_i:2},{self.blk_i:2}: " \
-            f"{self.mnemonic:20} -{self.pop} +{self.push} " \
-            f"[{self.stack_after:2}]"
+    def desc(self, tokens=False):
+        if tokens:
+            return [f"M{self.mnemonic}", f"-{self.pop}", f"+{self.push}", 
+                    f"S{self.stack_after:2}"]
+        else:
+            return f"{self.fn_i:2},{self.blk_i:2}: " \
+                f"{self.mnemonic:20} -{self.pop} +{self.push} " \
+                f"[{self.stack_after:2}]"
 
 
 class InstrWithImm(Instr):
@@ -129,7 +133,7 @@ class InstrWithImm(Instr):
         return (self._update_imm(f) and super()._finish_init(f))
 
 
-class FnStart(Instr):
+class DummyFnStart(Instr):
     """Dummy intruction inserted at the start of each function
     
     Instr.append_to() assumes that there is a last_instr. All blocks begin with 
@@ -137,7 +141,7 @@ class FnStart(Instr):
     function-level block, which is where we insert this dummy.
     """ 
     def __init__(self):
-        super().__init__(mnemonic='FnStart', opcode=b'', pop=0, push=0)
+        super().__init__(mnemonic='DummyFnStart', opcode=b'', pop=0, push=0)
         self.stack_after = 0
         self.fn_i = -1
         self.blk_i = 0
@@ -186,8 +190,12 @@ class BlockInstr(InstrWithImm):
     def _append(self, f: 'Function'):
         f._new_blk(instr0=self)
     
-    def desc(self):
-        return super().desc() + f"   return_type={self.return_type}"
+    def desc(self, tokens=False):
+        if tokens:
+            return super().desc(tokens) + \
+                ['return_type=', str(self.return_type)]
+        else:
+            return super().desc(tokens) + f"   return_type={self.return_type}"
 
 
 class ElseInstr(Instr):
@@ -290,8 +298,11 @@ class BranchInstr(InstrWithImm):
         if self.mnemonic == 'br l' and f.creative_OK:
             end_instr.append_to(f)       # add an `end` instruction
     
-    def desc(self):
-        return super().desc() + f"   dest={self.dest}"
+    def desc(self, tokens=False):
+        if tokens:
+            return super().desc(tokens) + ['dest=', str(self.dest)]
+        else:
+            return super().desc(tokens) + f"   dest={self.dest}"
 
 
 class ReturnInstr(Instr):
@@ -394,8 +405,13 @@ class MemInstr(InstrWithImm):
         self.offset = None
         return self._update_imm(f)
     
-    def desc(self):
-        return super().desc() + f"   align={self.align} offset={self.offset}"
+    def desc(self, tokens=False):
+        if tokens:
+            return super().desc(tokens) + \
+                ['align=', str(self.align), 'offset=', str(self.offset)]
+        else:
+            return super().desc(tokens) + \
+                f"   align={self.align} offset={self.offset}"
 
 
 class VarInstr(InstrWithImm):
@@ -432,8 +448,11 @@ class VarInstr(InstrWithImm):
         self.varID = None
         return self._update_imm(f)
     
-    def desc(self):
-        return super().desc() + f"   varID={self.varID}"
+    def desc(self, tokens=False):
+        if tokens:
+            return super().desc(tokens) + ['varID=', str(self.varID)]
+        else:
+            return super().desc(tokens) + f"   varID={self.varID}"
 
 
 class ConstInstr(InstrWithImm):
@@ -462,8 +481,11 @@ class ConstInstr(InstrWithImm):
         self.val = None
         return self._update_imm(f)
     
-    def desc(self):
-        return super().desc() + f"   val={self.val}"
+    def desc(self, tokens=False):
+        if tokens:
+            return super().desc(tokens) + ['val=', str(self.val)]
+        else:
+            return super().desc(tokens) + f"   val={self.val}"
 
 
 """\
@@ -626,7 +648,7 @@ class CodeBlock(Instr):
         
         1. Level 0 block (function level):
            
-             CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
+             CodeBlock(instr0=DummyFnStart(), parent=None, fn_targ=fn_targ)
         
         2. The standard blocks (`block` and `loop`):
            
@@ -638,7 +660,7 @@ class CodeBlock(Instr):
         """
         if parent is None:
             # no parent, we're at Level 0 (function level)
-            assert type(instr0) is FnStart
+            assert type(instr0) is DummyFnStart
             assert fn_targ is not None
             
             m = 'L0 block'
@@ -684,19 +706,40 @@ class CodeBlock(Instr):
     def del_level(self, i: int) -> bool:
         del(self.blocks[i])
     
-    def dump(self):
-        if self.is_L0:
-            spacer = ''
+    def desc(self, tokens=False):
+        if tokens:
+            dummy = copy(self.content[0])
+            dummy.pop = self.pop
+            dummy.push = self.push
+            dummy.stack_after = self.stack_after
+            return dummy.desc(tokens)
         else:
-            yield self.desc()
-            spacer = ' '*4
+            return super().desc(tokens)
+    
+    def dump(self, tokens=False):
+        spacer = ' '*3
+        if tokens:
+            start = 1
+            NL = ['NL']
+            if self.is_L0:
+                spacer = []
+            else:
+                spacer = [spacer]
+        else:
+            start = 0
+            NL = ''
+            if self.is_L0:
+                spacer = ''
         
-        for i in self.content:
+        if not self.is_L0:
+            yield self.desc(tokens) + NL
+        
+        for i in self.content[start:]:
             if isinstance(i, CodeBlock):
-                for s in i.dump():
+                for s in i.dump(tokens):
                     yield spacer + s
             else:
-                yield spacer + i.desc()
+                yield spacer + i.desc(tokens) + NL
 
 
 class IfBlock(CodeBlock):
@@ -727,10 +770,11 @@ class IfBlock(CodeBlock):
         if self.else_blk is not None:
             self.else_blk.del_level(i)
     
-    def dump(self):
-        yield from super().dump()
+    def dump(self, tokens=False):
+        yield from super().dump(tokens)
         if self.else_blk is not None:
-            yield from self.else_blk.dump()
+            yield from self.else_blk.dump(tokens)
+        
 
 
 class ElseBlock(CodeBlock):
@@ -845,7 +889,8 @@ class Function:
         else:
             raise RuntimeError("need either 'gen0' or 'parse'")
         
-        self.L0_blk = CodeBlock(instr0=FnStart(), parent=None, fn_targ=fn_targ)
+        self.L0_blk = CodeBlock(instr0=DummyFnStart(), parent=None,
+                                fn_targ=fn_targ)
         self.last_instr = self.L0_blk.content[-1]
         self.cur_blk = self.L0_blk
         self.wind_down = None
@@ -866,9 +911,12 @@ class Function:
         else:
             return None
     
-    def dump(self):
-        print(f"length = {self.length}")
-        print(*self.L0_blk.dump(), sep="\n")
+    def dump(self, tokens=False):
+        if tokens:
+            return self.L0_blk.dump(tokens)
+        else:
+            print(f"length = {self.length}")
+            print(*self.L0_blk.dump(tokens), sep="\n")
     
     def _append_instr(self, instr: 'Instr'):
         self.cur_blk.content.append(instr)
@@ -963,8 +1011,9 @@ class Function:
             instr = blk.content[instr.blk_i]
             blk = parent_blk.content[parent_i.blk_i].else_blk
         
-        The index starts with the initial `FnStart` at index[0] and ends with 
-        the terminal `end` (at the end of the function) at index[self.length]
+        The index starts with the initial `DummyFnStart` at index[0] and ends 
+        with the terminal `end` (at the end of the function) at 
+        index[self.length]
         
         The following is True for all index entries:
         
@@ -999,8 +1048,8 @@ class Function:
         
         Returns None if there is no such region
         
-        The initial dummy `FnStart` and the terminal `end` instruction at the 
-        end of the function are never part of the region
+        The initial dummy `DummyFnStart` and the terminal `end` instruction
+        at the end of the function are never part of the region
         """
         for L in range(length, self.length):
             # [self.length] is the terminal `end` at the end of the function
@@ -1037,8 +1086,8 @@ class Function:
         
         Returns None if there is no such region
         
-        The initial dummy `FnStart` and the terminal `end` instruction at the 
-        end of the function are never part of the region
+        The initial dummy `DummyFnStart` and the terminal `end` instruction 
+        at the end of the function are never part of the region
         """
         for L in range(length, self.length):
             # [self.length] is the terminal `end` at the end of the function
@@ -1078,9 +1127,10 @@ class Function:
         
             instr = blk.content[instr.blk_i]
         
-        If the instruction is an `end`, returns the whole block (along with its 
-        parental block). May return the FnStart dummy instruction at the start 
-        of the function, but never the `end` at the very end of the function.        
+        If the instruction is an `end`, returns the whole block (along with
+        its parental block). May return the DummyFnStart dummy instruction 
+        at the start of the function, but never the `end` at the very end 
+        of the function.
         """ 
         reachable = [i for i in self.index \
                      if (i[1].any_OK_after is None or \
