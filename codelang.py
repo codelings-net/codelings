@@ -99,8 +99,10 @@ class Instr:
     
     def desc(self, tokens=False):
         if tokens:
-            return [f"M{self.mnemonic}", f"-{self.pop}", f"+{self.push}", 
-                    f"S{self.stack_after:2}"]
+            return [('M', self.mnemonic),
+                    ('-', str(self.pop)),
+                    ('+', str(self.push)),
+                    ('S', f"{self.stack_after:2}")]
         else:
             return f"{self.fn_i:2},{self.blk_i:2}: " \
                 f"{self.mnemonic:20} -{self.pop} +{self.push} " \
@@ -193,7 +195,7 @@ class BlockInstr(InstrWithImm):
     def desc(self, tokens=False):
         if tokens:
             return super().desc(tokens) + \
-                ['return_type=', str(self.return_type)]
+                [('=', 'return_type='), ('V', str(self.return_type))]
         else:
             return super().desc(tokens) + f"   return_type={self.return_type}"
 
@@ -300,7 +302,8 @@ class BranchInstr(InstrWithImm):
     
     def desc(self, tokens=False):
         if tokens:
-            return super().desc(tokens) + ['dest=', str(self.dest)]
+            return super().desc(tokens) + \
+                [('=', 'dest='), ('V', str(self.dest))]
         else:
             return super().desc(tokens) + f"   dest={self.dest}"
 
@@ -408,7 +411,8 @@ class MemInstr(InstrWithImm):
     def desc(self, tokens=False):
         if tokens:
             return super().desc(tokens) + \
-                ['align=', str(self.align), 'offset=', str(self.offset)]
+                [('=', 'align='), ('V', str(self.align)),
+                 ('=', 'offset='), ('V', str(self.offset))]
         else:
             return super().desc(tokens) + \
                 f"   align={self.align} offset={self.offset}"
@@ -450,7 +454,8 @@ class VarInstr(InstrWithImm):
     
     def desc(self, tokens=False):
         if tokens:
-            return super().desc(tokens) + ['varID=', str(self.varID)]
+            return super().desc(tokens) + \
+                [('=', 'varID='), ('V', str(self.varID))]
         else:
             return super().desc(tokens) + f"   varID={self.varID}"
 
@@ -483,7 +488,8 @@ class ConstInstr(InstrWithImm):
     
     def desc(self, tokens=False):
         if tokens:
-            return super().desc(tokens) + ['val=', str(self.val)]
+            return super().desc(tokens) + \
+                [('=', 'val='), ('V', str(self.val))]
         else:
             return super().desc(tokens) + f"   val={self.val}"
 
@@ -720,11 +726,11 @@ class CodeBlock(Instr):
         spacer = ' '*3
         if tokens:
             start = 1
-            NL = ['NL']
+            NL = [('N', '')]
             if self.is_L0:
                 spacer = []
             else:
-                spacer = [spacer]
+                spacer = [(' ', spacer)]
         else:
             start = 0
             NL = ''
