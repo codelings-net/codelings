@@ -755,7 +755,7 @@ def uniq(cfg: 'Config'):
     print(f"# {n_files} files left in '{cfg.outdir}'")
 
 
-def dump_colour_diff(width, new_f, old_f=None):
+def dump_coloured_diff(width, new_f, old_f=None):
     line_so_far = 0
     
     def coloured_print(mode, s: str):
@@ -765,18 +765,10 @@ def dump_colour_diff(width, new_f, old_f=None):
         if mode == 'd':     # deletion
             out = colored.stylize(s, colored.bg('dark_red_1'))
         elif mode == 'i':   # insertion
-            out = colored.stylize(s, colored.bg('dark_green_1'))
+            out = colored.stylize(s, colored.bg('dark_green'))
         
         print(out, end='')
         line_so_far += len(s)
-    
-    def item_type(item: str):
-        if item[0] in (' ', 'M', '-', '+', 'S', 'N'):
-            return item[0]
-        elif item[-1] == '=':
-            return '='
-        else:
-            return 'V'
     
     spacer, spacer_type, spacer_mode = False, None, None
     
@@ -784,30 +776,31 @@ def dump_colour_diff(width, new_f, old_f=None):
         nonlocal spacer, spacer_type, spacer_mode
         nonlocal width, line_so_far
         
-        for i in content:
-            i_type = item_type(i)
-            
+        for i_type, i in content:
             if i_type == 'N':
                 spacer = ' '*(width - line_so_far)
-                coloured_print(spacer_mode, spacer)
-            elif spacer and spacer_type != i_type:
+            
+            if spacer and spacer_type != i_type:
                 if 'M' in (mode, spacer_mode):
                     coloured_print('M', spacer)
                 else:
                     coloured_print(mode, spacer)
             
             if i_type == 'M':               # mnemonic
-                coloured_print(mode, i[1:])
-                spacer = ' '*(20 - len(i[1:]))
-            elif i_type in ('-', '+', 'V'): # pop, push, immediate value
                 coloured_print(mode, i)
+                spacer = ' '*(20 - len(i))
+            elif i_type in ('-', '+'):      # pop, push
+                coloured_print(mode, i_type + i)
                 spacer = ' '
             elif i_type == 'S':             # stack size (aka stack_after)
-                coloured_print(mode, f"[{i[1:]}]")
+                coloured_print(mode, '[' + i + ']')
                 spacer = '   '
             elif i_type in ('=', ' '):      # immediate type, spacer
                 coloured_print(mode, i)
                 spacer = False
+            elif i_type == 'V':             # immediate value
+                coloured_print(mode, i)
+                spacer = ' '
             elif i_type == 'N':             # new line
                 print()
                 spacer = False
@@ -831,7 +824,7 @@ def dump_colour_diff(width, new_f, old_f=None):
                 old_end = d[i][2]
                 while (prev_old_start <= old_start-j-1 and \
                        old_f[old_start-j-1] == old_f[old_end-j-1] and \
-                       old_f[old_start-j-1] != 'NL'):
+                       old_f[old_start-j-1][0] != 'N'):
                     j += 1
                 
                 if j > 0:
@@ -842,6 +835,22 @@ def dump_colour_diff(width, new_f, old_f=None):
                     
                     d[i+1][1] -= j      # old_start
                     d[i+1][3] -= j      # new_start
+                
+                j = 0
+                next_old_end = d[i+1][2]
+                while (old_end+j < next_old_end and \
+                       old_f[old_start+j] == old_f[old_end+j] and \
+                       old_f[old_start+j][0] != 'N'):
+                    j += 1
+                
+                if j > 0:
+                    d[i-1][2] += j      # old_end
+                    d[i-1][4] += j      # new_end
+                    
+                    d[i][1:] = [val+j for val in d[i][1:]]
+                    
+                    d[i+1][1] += j      # old_start
+                    d[i+1][3] += j      # new_start
         
         return d
     
@@ -864,36 +873,43 @@ def dump_colour_diff(width, new_f, old_f=None):
             raise RuntimeError(f"uknown tag '{tag}'")
 
 
-def history(cfg: 'Config', json_fname: str):
+
+def history(cfg: 'Config', json_fnames: list):
     dw = 25
     fin = '-'*dw + ' FINAL VERSION ' + '-'*dw
     width = len(fin)
     
-    jsons = collections.deque([json_fname])
-    cdls = collections.deque()
-    while len(jsons) > 0:
-        json_fname = jsons.pop()
-        cdl = Codeling(cfg, json_fname=json_fname)
-        cdls.append(cdl)
-        jsons.extend(os.path.join(cfg.histdir, ID + '.json') \
-                     for ID in cdl.json['parents'])
-    
-    cdls.reverse()
-    prev_f = None
-    for cdl in cdls:
-        print(json.dumps(cdl.json, indent=3))
-        targ = 0
-        f = collections.deque()
-        for l in codelang.Function(parse=(cdl.b(), targ)).dump(tokens=True):
-            f.extend(l)
+    cdls = {}
+    def get(json_fname: str = None, ID: str = None):
+        nonlocal cfg, cdls
+        if ID is not None:
+            if ID in cdls: return
+            json_fname = os.path.join(cfg.histdir, parent + '.json')
         
-        f = list(f)
-        dump_colour_diff(width, f, prev_f)
-        print()
-        prev_f = f
+        cdl = Codeling(cfg, json_fname=json_fname)
+        targ = 0
+        gen = codelang.Function(parse=(cdl.b(), targ)).dump(tokens=True)
+        cdl._f = [item for instr in gen for item in instr]
+        cdls[cdl.json['ID']] = cdl
+        for p in cdl.json['parents']:
+            get(ID=p)
     
-    print(fin)
-    dump_colour_diff(width, f)
+    for fn in json_fnames:
+        get(json_fname=fn)
+    
+    for _, cdl in sorted(cdls.items()):
+        print(json.dumps(cdl.json, indent=3))
+        lp = len(cdl.json['parents'])
+        if lp == 0:
+            dump_coloured_diff(width, cdl._f, [])
+        elif lp == 1:
+            p_f = cdls[cdl.json['parents'][0]]._f
+            dump_coloured_diff(width, cdl._f, p_f)
+        else:
+            raise RuntimeError('can only handle up to 1 parent')
+        
+        print()
+
 
 def LEB128_test():
     for i32 in (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
@@ -1081,10 +1097,11 @@ def main():
         help=f"""Look at all codelings in '{cfg.outdir}' and remove those that 
         are duplicates of (i.e. have the same code as) codelings in 
         '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
-    cmds.add_argument('-history', type=type_json, metavar='json',
+    cmds.add_argument('-history', type=type_json, metavar='json(s)', nargs='+',
         help=f"""Print the history of a particular codeling stored in the 
         'json' file (NB must end in '.json') by recursively looking up its 
-        parents in '{cfg.histdir}'.""")
+        parents in '{cfg.histdir}'. Also accepts several 'json' files, e.g. 
+        via '-history out/*.json'.""")
     
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
