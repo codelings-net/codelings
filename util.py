@@ -1,6 +1,21 @@
-# utility functions shared by `evolver.py` and `code.py`
+# utility functions shared by `evolver.py`, `codeling.py` and `codelang.py`
 
 import random
+import time
+
+
+def nice_now():
+    return time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime())
+
+
+def nice_now_UTC():
+    """time.gmtime() sounds like GMT, but it's UTC under the hood:
+    https://docs.python.org/3.8/library/time.html#time.gmtime
+      " Convert a time expressed in seconds since the epoch to a struct_time
+        in UTC in which the dst flag is always zero. "
+    """
+    return time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+
 
 class ByteStream:
     def __init__(self, b: bytes):
