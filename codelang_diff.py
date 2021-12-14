@@ -70,6 +70,148 @@ class IndelPrinter:
             print(self.html_footer)
 
 
+def expand_replaces(diff, old_f, new_f):
+    for item in diff:
+        tag, old_s, old_e, new_s, new_e = item  # _s = start, _e = end
+        if tag != 'replace':
+            yield item
+            continue
+        
+        if ((old_e-old_s == 1 or new_e-new_s == 1) and
+            old_f[old_s][0] == new_f[new_s][0] and
+            old_f[old_s][0] in ('S', 'V')):
+            # special case of a matching singleton, e.g.
+            # 
+            #   <replace> a1 b2 c3 <with> a2 </replace>
+            # 
+            # expanded to:
+            # 
+            #   <del> a1 </del> <ins> a2 </ins> <del> b2 c3 </del>
+            # 
+            yield ['delete', old_s, old_s+1, new_s, new_s]
+            yield ['insert', old_s+1, old_s+1, new_s, new_s+1]
+            
+            if old_e - old_s > 1:
+                yield ['delete', old_s+1, old_e, new_s+1, new_s+1]
+            
+            if new_e - new_s > 1:
+                yield ['insert', old_e, old_e, new_s+1, new_e]
+        else:
+            # standard expansion, e.g.
+            # 
+            #   <replace> a1 b2 <with> c3 </replace>
+            # 
+            # expanded to:
+            # 
+            #   <del> a1 b2 </del> <ins> c3 </ins>
+            # 
+            yield ['delete', old_s, old_e, new_s, new_s]
+            yield ['insert', old_e, old_e, new_s, new_e]
+
+
+def tidy_up_isolated_dels(diff: list, old_f):
+    #          0      1          2        3          4
+    # item = (tag, old_start, old_end, new_start, new_end)
+    for i in range(1, len(diff)-1):
+        if diff[i][0]=='delete' and diff[i-1][0]==diff[i+1][0]=='equal':
+            # misassigned ambiguous starts, e.g. change:
+            # 
+            #   spacer  <del> mnemonic ... newline
+            #   spacer </del>
+            # 
+            # to:
+            # 
+            #    <del> spacer mnemonic ... newline
+            #   </del> spacer
+            # 
+            j = 0
+            prev_old_start = diff[i-1][1]
+            old_start, old_end = diff[i][1:3]
+            while (prev_old_start <= old_start-j-1 and
+                   old_f[old_start-j-1] == old_f[old_end-j-1] and
+                   old_f[old_start-j-1][0] != 'N'):
+                j += 1
+            
+            if j > 0:
+                diff[i-1][2] -= j       # old_end
+                diff[i-1][4] -= j       # new_end
+                diff[i][1:] = [val-j for val in diff[i][1:]]
+                diff[i+1][1] -= j       # old_start
+                diff[i+1][3] -= j       # new_start
+            
+            # misassigned ambiguous ends, e.g. change:
+            # 
+            #   mnemonic1 ... stack1  <del> newline
+            #   mnemonic2 ... stack2 </del> newline
+            # 
+            # to:
+            # 
+            #          mnemonic1 ... stack1 newline
+            #    <del> mnemonic2 ... stack2 newline
+            #   </del>
+            # 
+            j = 0
+            next_old_end = diff[i+1][2]
+            while (old_end+j < next_old_end and
+                   old_f[old_start+j] == old_f[old_end+j]):
+                j += 1
+                if old_f[old_start+(j-1)][0] == 'N': break
+            
+            if j > 0:
+                diff[i-1][2] += j       # old_end
+                diff[i-1][4] += j       # new_end
+                diff[i][1:] = [val+j for val in diff[i][1:]]
+                diff[i+1][1] += j       # old_start
+                diff[i+1][3] += j       # new_start
+    
+    return diff
+
+
+def tidy_up_dels_missing_final_NL(diff: list, old_f):
+    yield diff[0]
+    
+    #          0      1          2        3          4
+    # item = (tag, old_start, old_end, new_start, new_end)
+    for i in range(1, len(diff)-1):
+        # if a deletion is missing a final newline, if possible steal it
+        # from itself by breaking it into two
+        # 
+        # e.g. change:
+        # 
+        #   mnemonic1 ... stack1  <del> imms newline
+        #   mnemonic2 ... stack2 </del> newline
+        # 
+        # to:
+        # 
+        #          mnemonic1 ... stack1 <del> imms </del> newline
+        #    <del> mnemonic2 ... stack2 newline
+        #   </del>
+        # 
+        tag, old_start, old_end, new, _ = diff[i]
+        next_tag = diff[i+1][0]
+        if (tag == 'delete' and next_tag == 'equal' and
+            old_f[old_end][0] == 'N'):
+            
+            deletion = enumerate(old_f[old_end-1:old_start-1:-1])
+            try:
+                d = next(i for i, item in deletion if item[0] == 'N')
+            except StopIteration:
+                yield diff[i]
+                continue
+            
+            yield ['delete', old_start, old_end-d-1, new, new]
+            yield ['equal', old_end-d-1, old_end-d, new, new+1]
+            yield ['delete', old_end-d, old_end+1, new+1, new+1]
+            
+            diff[i+1][1] += 1       # old_start
+            diff[i+1][3] += 1       # new_start
+        else:
+            yield diff[i]
+    
+    if len(diff) > 1:
+        yield diff[-1]
+
+
 class CodelangDiff:
     def __init__(self, prtr: 'IndelPrinter', new_f, old_f=None):
         """Arguments:
@@ -156,157 +298,17 @@ class CodelangDiff:
             self.last_type = i_type
             self.last_mode = mode
     
-    @staticmethod
-    def expand_replaces(diff, old_f, new_f):
-        for item in diff:
-            tag, old_s, old_e, new_s, new_e = item  # _s = start, _e = end
-            if tag != 'replace':
-                yield item
-                continue
-            
-            if ((old_e-old_s == 1 or new_e-new_s == 1) and
-                old_f[old_s][0] == new_f[new_s][0] and
-                old_f[old_s][0] in ('S', 'V')):
-                # special case of a matching singleton, e.g.
-                # 
-                #   <replace> a1 b2 c3 <with> a2 </replace>
-                # 
-                # expanded to:
-                # 
-                #   <del> a1 </del> <ins> a2 </ins> <del> b2 c3 </del>
-                # 
-                yield ['delete', old_s, old_s+1, new_s, new_s]
-                yield ['insert', old_s+1, old_s+1, new_s, new_s+1]
-                
-                if old_e - old_s > 1:
-                    yield ['delete', old_s+1, old_e, new_s+1, new_s+1]
-                
-                if new_e - new_s > 1:
-                    yield ['insert', old_e, old_e, new_s+1, new_e]
-            else:
-                # standard expansion, e.g.
-                # 
-                #   <replace> a1 b2 <with> c3 </replace>
-                # 
-                # expanded to:
-                # 
-                #   <del> a1 b2 </del> <ins> c3 </ins>
-                # 
-                yield ['delete', old_s, old_e, new_s, new_s]
-                yield ['insert', old_e, old_e, new_s, new_e]
-    
-    @staticmethod
-    def tidy_up_isolated_dels(diff: list, old_f):
-        #          0      1          2        3          4
-        # item = (tag, old_start, old_end, new_start, new_end)
-        for i in range(1, len(diff)-1):
-            if diff[i][0]=='delete' and diff[i-1][0]==diff[i+1][0]=='equal':
-                # misassigned ambiguous starts, e.g. change:
-                # 
-                #   spacer  <del> mnemonic ... newline
-                #   spacer </del>
-                # 
-                # to:
-                # 
-                #    <del> spacer mnemonic ... newline
-                #   </del> spacer
-                # 
-                j = 0
-                prev_old_start = diff[i-1][1]
-                old_start, old_end = diff[i][1:3]
-                while (prev_old_start <= old_start-j-1 and
-                       old_f[old_start-j-1] == old_f[old_end-j-1] and
-                       old_f[old_start-j-1][0] != 'N'):
-                    j += 1
-                
-                if j > 0:
-                    diff[i-1][2] -= j       # old_end
-                    diff[i-1][4] -= j       # new_end
-                    diff[i][1:] = [val-j for val in diff[i][1:]]
-                    diff[i+1][1] -= j       # old_start
-                    diff[i+1][3] -= j       # new_start
-                
-                # misassigned ambiguous ends, e.g. change:
-                # 
-                #   mnemonic1 ... stack1  <del> newline
-                #   mnemonic2 ... stack2 </del> newline
-                # 
-                # to:
-                # 
-                #          mnemonic1 ... stack1 newline
-                #    <del> mnemonic2 ... stack2 newline
-                #   </del>
-                # 
-                j = 0
-                next_old_end = diff[i+1][2]
-                while (old_end+j < next_old_end and
-                       old_f[old_start+j] == old_f[old_end+j]):
-                    j += 1
-                    if old_f[old_start+(j-1)][0] == 'N': break
-                
-                if j > 0:
-                    diff[i-1][2] += j       # old_end
-                    diff[i-1][4] += j       # new_end
-                    diff[i][1:] = [val+j for val in diff[i][1:]]
-                    diff[i+1][1] += j       # old_start
-                    diff[i+1][3] += j       # new_start
-        return diff
-    
-    @staticmethod
-    def tidy_up_dels_missing_final_NL(diff: list, old_f):
-        yield diff[0]
-        
-        #          0      1          2        3          4
-        # item = (tag, old_start, old_end, new_start, new_end)
-        for i in range(1, len(diff)-1):
-            # if a deletion is missing a final newline, if possible steal it
-            # from itself by breaking it into two
-            # 
-            # e.g. change:
-            # 
-            #   mnemonic1 ... stack1  <del> imms newline
-            #   mnemonic2 ... stack2 </del> newline
-            # 
-            # to:
-            # 
-            #          mnemonic1 ... stack1 <del> imms </del> newline
-            #    <del> mnemonic2 ... stack2 newline
-            #   </del>
-            # 
-            tag, old_start, old_end, new, _ = diff[i]
-            next_tag = diff[i+1][0]
-            if (tag == 'delete' and next_tag == 'equal' and
-                old_f[old_end][0] == 'N'):
-                
-                deletion = enumerate(old_f[old_end-1:old_start-1:-1])
-                try:
-                    d = next(i for i, item in deletion if item[0] == 'N')
-                except StopIteration:
-                    yield diff[i]
-                    continue
-                
-                yield ['delete', old_start, old_end-d-1, new, new]
-                yield ['equal', old_end-d-1, old_end-d, new, new+1]
-                yield ['delete', old_end-d, old_end+1, new+1, new+1]
-                
-                diff[i+1][1] += 1       # old_start
-                diff[i+1][3] += 1       # new_start
-            else:
-                yield diff[i]
-        
-        if len(diff) > 1:
-            yield diff[-1]
-    
     def diff(self, new_f, old_f=None):
         if old_f is None:
-            printer('M', new_f)
+            self.printer('M', new_f)
+            self.prtr.EOF()
             return
         
         d = difflib.SequenceMatcher(None, old_f, new_f).get_opcodes()
         d = [list(item) for item in d]
-        d = CodelangDiff.expand_replaces(d, old_f, new_f)
-        d = CodelangDiff.tidy_up_isolated_dels(list(d), old_f)
-        d = CodelangDiff.tidy_up_dels_missing_final_NL(d, old_f)
+        d = expand_replaces(d, old_f, new_f)
+        d = tidy_up_isolated_dels(list(d), old_f)
+        d = tidy_up_dels_missing_final_NL(d, old_f)
         
         for tag, old_start, old_end, new_start, new_end in d:
             if tag == 'delete':
