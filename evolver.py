@@ -26,34 +26,42 @@ import time
 STOPPING = False
 
 
-def all_json_fnames(d: str):
-    return sorted(glob.glob(os.path.join(d, '*.json')))
+def SIGINT_handler(sig, frame):
+    global STOPPING  # signal handler: globals need to be explicitly declared
+    STOPPING = True
 
 
-def json2wasm(json_fname: str) -> str:
-    return re.sub(r'\.json$', '.wasm', json_fname)
+def stop_check(cdl_gtor) -> 'codeling.Codeling':
+    for cdl in cdl_gtor:
+        if STOPPING:
+            print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
+                  file=sys.stderr)
+            break
+        else:
+            yield cdl
 
 
-def get_release():
-    with open('release', 'r') as f:
-        return f.readline().strip()
+def _init_pool_worker():
+    # ignore SIGINT in pool workers
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
-def score_Codeling(cdl: 'Codeling'):
+def _score_Codeling(cdl: 'codeling.Codeling'):
     return cdl.score()
 
 
-def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
+def score_Codelings(cfg: 'config.Config', cdl_gtor) -> None:
     IDlen = len(cfg.runid) + 13 if cfg.runid is not None else 20
     times = 't_gen t_valid t_run t_score'.split()
     t_start = time.time()
+    seen_code = {}
     
     print('#', ' '.join(sys.argv))
     
-    if cfg.thresh is not None:
-        thresh = f"thresh={cfg.thresh:#x}"
-    else:
+    if cfg.thresh is None:
         thresh = 'no threshold'
+    else:
+        thresh = f"thresh={cfg.thresh:#x}"
     
     print('# Release ' + cfg.release,
           'Codeling.score_' + cfg.scfn + '()',
@@ -62,7 +70,13 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
     if cfg.thresh is None:
         print("# 'No threshold' means that all codelings will be rejected")
     
-    print('# Started:', util.nice_now())
+    if not cfg.keep_all:
+        print(f"# Reading '{cfg.indir}' to keep new codelings unique ...")
+        for json_fname in all_json_fnames(cfg.indir):
+            cdl = codeling.Codeling(cfg, json_fname=json_fname)
+            seen_code[cdl.json['code']] = json_fname
+    
+    print('# Scoring started:', util.nice_now())
     print('#')
     print("# All times below are in microseconds, the scores are in hex")
     
@@ -72,24 +86,33 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
     n_scored, n_accepted = 0, 0
     n_scored_prev, t_prev = 0, t_start
     
-    with multiprocessing.Pool(cfg.nproc, init_pool_worker) as p:
+    with multiprocessing.Pool(cfg.nproc, _init_pool_worker) as p:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(score_Codeling, cdl_gtor):
-        #for r in p.imap_unordered(score_Codeling, cdl_gtor, chunksize=20):
+        for r in map(_score_Codeling, cdl_gtor):
+        #for r in p.imap_unordered(_score_Codeling, cdl_gtor, chunksize=20):
             n_scored += 1
+            
+            if r.status == 'accept' and not cfg.keep_all:
+                if r.code in seen_code:
+                    r.status = 'reject'
+                    r.desc = f"duplicate of '{seen_code[r.code]}'"
+                    os.remove(r.json_fname)
+                    os.remove(json2wasm(r.json_fname))
+                else:
+                    seen_code[r.code] = r.json_fname
+            
             if r.status == 'accept':
                 n_accepted += 1
             
             micros = [round(1e6 * getattr(r, t)) for t in times]
-            
             ts = [f"{s:>7}" for s in (*micros, r.fuel, f"{r.score:x}",
                                       r.status, f"{n_accepted} ")]
             print(f"{r.ID:{IDlen}}", *ts, r.desc, sep="\t")
             
-            if n_scored % 1_000_000 == 0:
-                if n_scored == 1_000_000:
+            if n_scored % 100_000 == 0:
+                if n_scored == 100_000:
                     print(f"{'time':23}",
                           *[f"{s:>15}" for s in ('n_scored/1e6',
                                                  'n_accepted',
@@ -105,19 +128,27 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
                       f"{thrpt:>15.2e}",
                       sep="\t", file=sys.stderr)
     
-    print('# Finished:', util.nice_now())
-    print(f"# Throughput: {n_scored/(time.time()-t_start)*3600:.2e} "
+    print('# Scoring finished:', util.nice_now())
+    print(f"# Scoring throughput: {n_scored/(time.time()-t_start)*3600:.2e} "
           f"scored/hour")
 
 
-def gtor_score(cfg: 'Config') -> 'Codeling':
+def all_json_fnames(d: str):
+    return sorted(glob.glob(os.path.join(d, '*.json')))
+
+
+def json2wasm(json_fname: str) -> str:
+    return re.sub(r'\.json$', '.wasm', json_fname)
+
+
+def gtor_score(cfg: 'config.Config') -> 'codeling.Codeling':
     for json_fname in all_json_fnames(cfg.indir):
         yield codeling.Codeling(cfg, json_fname=json_fname,
                                 wasm_fname=json2wasm(json_fname),
                                 deferred=True)
 
 
-def gtor_gen0(cfg: 'Config', Ls, N: int) -> 'Codeling':
+def gtor_gen0(cfg: 'config.Config', Ls, N: int) -> 'codeling.Codeling':
     cdl_i = 0
     for i in range(N):
         for L in Ls:
@@ -126,7 +157,7 @@ def gtor_gen0(cfg: 'Config', Ls, N: int) -> 'Codeling':
             yield codeling.Codeling(cfg, gen0=(ID, L), deferred=True)
 
 
-def gtor_mutate(cfg: 'Config', Ls, N: int) -> 'Codeling':
+def gtor_mutate(cfg: 'config.Config', Ls, N: int) -> 'codeling.Codeling':
     cdl_i = 0
     for i in range(N):
         for json_fname in all_json_fnames(cfg.indir):
@@ -137,19 +168,9 @@ def gtor_mutate(cfg: 'Config', Ls, N: int) -> 'Codeling':
                                         deferred=True)
 
 
-def stop_check(cdl_gtor) -> 'Codeling':
-    for cdl in cdl_gtor:
-        if STOPPING:
-            print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
-                  file=sys.stderr)
-            break
-        else:
-            yield cdl
-
-
 # TODO XXX uses LastID, needs a rewrite
 # also get rid of old 'if STOPPING'
-def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
+def gtor_concat(cfg: 'config.Config', gen: int) -> 'codeling.Codeling':
     IDs = LastID(write_at_exit=False)
     alive = all_alive_json()
     for fn1 in alive:
@@ -173,31 +194,7 @@ def gtor_concat(cfg: 'Config', gen: int) -> 'Codeling':
                 yield child
 
 
-def uniq(cfg: 'Config'):
-    seen = {}
-    
-    print(f"# Reading '{cfg.indir}' ...")
-    for json_fname in all_json_fnames(cfg.indir):
-        cdl = codeling.Codeling(cfg, json_fname=json_fname)
-        seen[cdl.json['code']] = json_fname
-    
-    print(f"# Making '{cfg.outdir}' unique ...")
-    n_files = 0
-    for json_fname in all_json_fnames(cfg.outdir):
-        cdl = codeling.Codeling(cfg, json_fname=json_fname)
-        code = cdl.json['code']
-        if code in seen:
-            print(f"'{json_fname}' has same code as '{seen[code]}', deleting")
-            os.remove(json_fname)
-            os.remove(json2wasm(json_fname))
-        else:
-            seen[code] = json_fname
-            n_files += 1
-    
-    print(f"# {n_files} files left in '{cfg.outdir}'")
-
-
-def history(cfg: 'Config', json_fnames: list):
+def history(cfg: 'config.Config', json_fnames: list):
     cdls = {}
     def get(json_fname: str = None, ID: str = None):
         nonlocal cfg, cdls
@@ -295,6 +292,11 @@ def list_available_mtfns():
             fns.append((fn_code, doc))
     
     print_item_desc(fns)
+
+
+def get_release():
+    with open('release', 'r') as f:
+        return f.readline().strip()
 
 
 def main():
@@ -423,10 +425,6 @@ def main():
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
         X+Y by concatenating their codes. XXX TODO BROKEN""")
-    cmds.add_argument('-uniq', action='store_true',
-        help=f"""Look at all codelings in '{cfg.outdir}' and remove those that 
-        are duplicates of (i.e. have the same code as) codelings in 
-        '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
     cmds.add_argument('-history', type=type_json, metavar='json', nargs='+',
         help=f"""Print the history of a particular codeling stored in the 
         'json' file (NB must end in '.json') by recursively looking up its 
@@ -471,6 +469,12 @@ def main():
         '{cfg.indir}') this creates hard links to the originals. If you ever
         want to use a negative threshold, try '" -0x40"' - note the quotation
         marks and the initial space. (Default: {default_T})""")
+    parser.add_argument('-keep-all', action='store_true',
+        help=f"""By default, newly generated codelings saved to 
+        '{cfg.outdir}' are kept unique, i.e. only codelings with new codes 
+        distinct from those already in '{cfg.indir}' and earlier entries in 
+        '{cfg.outdir}' are kept. When this option is applied, all newly 
+        generated codelings above the threshold are kept.""")
     parser.add_argument('-indir', type=type_dir_str, metavar='path',
         help=f"""Change the input directory to 'path'.
         (Default: '{cfg.indir}')""")
@@ -487,28 +491,31 @@ def main():
         {cfg.format})""")
     
     parser.add_argument('runid', type=str, nargs='?',
-        help=f"""Identifier for this run (e.g. 'run01'). All codelings 
+        help=f"""Identifier for this run (e.g. 'run01'). All new codelings 
         produced during the run will have identifiers of the form 
         'runid-012345678901', i.e. the run identifier followed by a dash and 
         twelve digits (with most of the leading ones being zero). The run 
         identifier is a required argument for all types of runs except 
-        '-score' and '-uniq' (where no new codelings are produced).""")
+        '-score' (where no new codelings are produced).""")
     
     args = parser.parse_args()
     
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
     if any([a is not None for a in new_cdls]) and args.runid is None:
-        parser.error("'runid' is required for all runs except "
-                     "'-score' and '-uniq'")
+        parser.error("'runid' is required for all runs except '-score'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    l = 'length fuel scfn mtfn thresh indir outdir nproc runid format'
+    l = 'length fuel scfn mtfn thresh keep_all indir outdir nproc runid format'
     for param in l.split():
         a = getattr(args, param)
         if a is not None or param == 'runid':
             setattr(cfg, param, a)
+    
+    if args.score:
+        cfg.runid = None
+        cfg.keep_all = True     # if no new codelings, keep all by default
     
     if args.upto:
         Ls = range(1, cfg.length + 1)
@@ -527,9 +534,6 @@ def main():
         gtor = gtor_mutate(cfg, Ls, args.mutate)
     elif args.concat is not None:
         gtor = gtor_concat(cfg, args.concat)
-    elif args.uniq:
-        uniq(cfg)
-        return
     elif args.history:
         history(cfg, args.history)
         return
@@ -539,16 +543,6 @@ def main():
     
     signal.signal(signal.SIGINT, SIGINT_handler)
     score_Codelings(cfg, stop_check(gtor))
-
-
-def SIGINT_handler(sig, frame):
-    global STOPPING  # signal handler, so needs to be explicitly declared
-    STOPPING = True
-
-
-def init_pool_worker():
-    # ignore SIGINT in pool workers
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 if __name__ == "__main__":
