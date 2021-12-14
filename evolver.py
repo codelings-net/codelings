@@ -34,13 +34,6 @@ def json2wasm(json_fname: str) -> str:
     return re.sub(r'\.json$', '.wasm', json_fname)
 
 
-def link2dir(f: str, d: str) -> None:
-    try:
-        os.link(f, os.path.join(d, os.path.basename(f)))
-    except FileExistsError:
-        pass
-
-
 def get_release():
     with open('release', 'r') as f:
         return f.readline().strip()
@@ -257,6 +250,15 @@ def hack():
 
 
 def print_item_desc(content):
+    """The single argument `content` looks as follows:
+    
+        [('item1', 'long description of item 1'),
+         ('item2', 'long description of item 2'), ...]
+    
+    Print this out in a nice way using textwrap.wrap(...).
+    
+    Used by list_available_xxxx() below.
+    """
     item_w = max([len(item) for item, _ in content])
     desc_w = shutil.get_terminal_size().columns - item_w - 6
     

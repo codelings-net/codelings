@@ -39,6 +39,13 @@ def comment(s: str) -> str:
     return re.sub(r'^', '# ', s, flags=re.MULTILINE)
 
 
+def link2dir(f: str, d: str) -> None:
+    try:
+        os.link(f, os.path.join(d, os.path.basename(f)))
+    except FileExistsError:
+        pass
+
+
 class Codeling:
     def __init__(
             self,
