@@ -1,6 +1,7 @@
 import codelang
 import util
 
+import hexdump
 import wasmtime
 
 from types import SimpleNamespace as sns
