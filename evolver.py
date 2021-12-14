@@ -4,7 +4,7 @@ import codelang
 import util
 import config
 
-import colored
+import colorama
 import hexdump
 import wasmtime
 
@@ -190,12 +190,12 @@ class Codeling:
         
         The initial bit in the inner size() means:
         
-           0x01 (1 locals entry: ) 0x10 (declare 16 locals of ) 0x7f (type i32)
+           0x01 (1 locals entry: ) 0x10 (declare 16 locals of) 0x7f (type i32)
         
         """
-        return self.cfg.template[:0x23] \
-            + util.size(b'\x01' + util.size(b'\x01\x10\x7f' + self.b())) \
-            + self.cfg.template[0x36:]
+        return (self.cfg.template[:0x23] +
+                util.size(b'\x01' + util.size(b'\x01\x10\x7f' + self.b())) +
+                self.cfg.template[0x36:])
     
     def write_wasm(self, wasm_bytes: bytes, outdir: str) -> str:
         fname = os.path.join(outdir, self.json['ID'] + '.wasm')
@@ -258,8 +258,8 @@ class Codeling:
         print('- hdr @ 0x0000:')
         hexdump.hexdump(bytearray(self.mem_ptr[:0x10]))
         
-        for seg, length in \
-                (('rnd', 0x10), ('tmp', 0x40), ('inp', 0x40), ('out', 0x40)):
+        for seg, length in (('rnd', 0x10), ('tmp', 0x40),
+                            ('inp', 0x40), ('out', 0x40)):
             addr = getattr(self, seg + '_addr')
             start = addr & 0xfff0
             print(f'- {seg} @ 0x{addr:04x}:')
@@ -378,8 +378,8 @@ class Codeling:
                    t_run=t_run)
     
     def score_v01(self) -> 'SimpleNamespace':
-        """Checks that the header is intact and whether there was any output to
-        'out'."""
+        """Checks that the header is intact and whether there was any output 
+        to 'out'."""
         
         self.set_rnd()
         self.set_inp(self.b())
@@ -439,8 +439,8 @@ class Codeling:
             desc += ' - ' + ' '.join([f'{w:4x}' for w in writes])
         
         score -= round(len(self.json['code']) / 2)
-        return sns(ID=self.json['ID'], score=score, desc=desc + msg, fuel=fuel,
-            t_run=t_run)
+        return sns(ID=self.json['ID'], score=score, desc=desc + msg,
+                   fuel=fuel, t_run=t_run)
     
     def _score_LEB128_val(self, val: int, lenpen: int) -> 'SimpleNamespace':
         self.reset_hdr()
@@ -475,10 +475,10 @@ class Codeling:
             L = len(out)
             diff = L - len(targ)
             if 0 < diff:
-                graded_end = 'i' * diff    # out > targ, these are (i)nsertions
+                graded_end = 'i' * diff # out > targ, these are (i)nsertions
                 score -= 0x08 * diff
                 L = len(targ)
-            elif diff < 0:                 # out < targ, these are (d)eletions
+            elif diff < 0:              # out < targ, these are (d)eletions
                 diff = -diff
                 graded_end = 'd' * diff
                 score -= 0x08 * diff
@@ -486,16 +486,16 @@ class Codeling:
             for o, t in zip(out, targ):
                 if o == t:
                     if o == 0x00:
-                        graded += 'Z'      # (Z)ero
+                        graded += 'Z'   # (Z)ero
                         score += 0x20
                     elif o == 0x0b:
-                        graded += 'E'      # (E)nd
+                        graded += 'E'   # (E)nd
                         score += 0x40
                     else:
-                        graded += 'M'      # (M)atch
+                        graded += 'M'   # (M)atch
                         score += 0x80
                 else:
-                    graded += 'x'          # substitution
+                    graded += 'x'       # substitution
                     score -= 0x08
                     
             desc += ':' + graded + graded_end
@@ -528,16 +528,16 @@ class Codeling:
     def score_LEB128(self) -> 'SimpleNamespace':
         """Penalties: -0x01 for every byte of code length, -0x08 for every 
         wrong byte written to 'out' (or missing when it should have been 
-        written), -0x40 for overwriting the header or a runtime exception (incl 
-        running out of fuel). Rewards: +0x100 when there is any output to 'out' 
-        plus +0x80 for every correct non-zero byte written to 'out' (reduced to 
-        +0x20 for 0x00 'zero' bytes and +0x40 for 0x0b 'end' bytes). Summed up 
-        over 16 test values. A final reward +0x200*(n-1) is awarded for the 
-        number n of different output strings across all test values. 
-        Description key: i = insertion, d = deletion, x = substition, Z = 
-        matching 0x00 zero byte, E = matching 0x0b end byte, M = matching 
-        non-zero non-end byte"""
-        
+        written), -0x40 for overwriting the header or a runtime exception 
+        (incl running out of fuel). Rewards: +0x100 when there is any output 
+        to 'out' plus +0x80 for every correct non-zero byte written to 'out' 
+        (reduced to +0x20 for 0x00 'zero' bytes and +0x40 for 0x0b 'end' 
+        bytes). Summed up over 16 test values. A final reward +0x200*(n-1) is 
+        awarded for the number n of different output strings across all test 
+        values. Description key: i = insertion, d = deletion, x = substition, 
+        Z = matching 0x00 zero byte, E = matching 0x0b end byte, M = matching 
+        non-zero non-end byte
+        """
         return self._score_LEB128(lenpen=1)
     
     def score_LEB128_nolen(self) -> 'SimpleNamespace':
@@ -612,22 +612,25 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
     t_start = time.time()
     
     print('#', ' '.join(sys.argv))
+    
+    if cfg.thresh is not None:
+        thresh = f"thresh={cfg.thresh:#x}"
+    else:
+        thresh = 'no threshold'
+    
     print('# Release ' + cfg.release,
           'Codeling.score_' + cfg.scfn + '()',
-          f"thresh={cfg.thresh:#x}" if cfg.thresh is not None \
-              else 'no threshold',
-          sep=', ')
+          thresh, sep=', ')
+    
     if cfg.thresh is None:
         print("# 'No threshold' means that all codelings will be rejected")
     
     print('# Started:', nice_now())
     print('#')
     print("# All times below are in microseconds, the scores are in hex")
-    print(f"{'# ID':{IDlen}}",
-          *[f"{s:>7}" for s in \
-              times + 'fuel score status'.split() + ['n_acc ']],
-          'description',
-          sep="\t")
+    
+    hs = [f"{s:>7}" for s in (*times, *'fuel score status'.split(), 'n_acc ')]
+    print(f"{'# ID':{IDlen}}", *hs, 'description', sep="\t")
     
     n_scored, n_accepted = 0, 0
     n_scored_prev, t_prev = 0, t_start
@@ -643,25 +646,25 @@ def score_Codelings(cfg: 'Config', cdl_gtor) -> None:
                 n_accepted += 1
             
             micros = [round(1e6 * getattr(r, t)) for t in times]
-            print(f"{r.ID:{IDlen}}",
-                  *[f"{s:>7}" for s in micros + \
-                      [r.fuel, f"{r.score:x}", r.status, f"{n_accepted} "]],
-                  r.desc,
-                  sep="\t")
+            
+            ts = [f"{s:>7}" for s in (*micros, r.fuel, f"{r.score:x}",
+                                      r.status, f"{n_accepted} ")]
+            print(f"{r.ID:{IDlen}}", *ts, r.desc, sep="\t")
             
             if n_scored % 1_000_000 == 0:
                 if n_scored == 1_000_000:
                     print(f"{'time':23}",
-                          *[f"{s:>15}" for s in \
-                              ('n_scored/1e6', 'n_accepted', 'scored/hour')],
+                          *[f"{s:>15}" for s in ('n_scored/1e6',
+                                                 'n_accepted',
+                                                 'scored/hour')],
                           sep="\t", file=sys.stderr)
                 
                 t_now = time.time()
                 thrpt = (n_scored - n_scored_prev) / (t_now - t_prev) * 3600
                 n_scored_prev, t_prev = n_scored, t_now
                 print(nice_now(),
-                      *[f"{i:>15d}" for i in \
-                          (round(n_scored / 1e6), n_accepted)],
+                      *[f"{i:>15d}" for i in (round(n_scored / 1e6),
+                                              n_accepted)],
                       f"{thrpt:>15.2e}",
                       sep="\t", file=sys.stderr)
     
@@ -755,136 +758,331 @@ def uniq(cfg: 'Config'):
     print(f"# {n_files} files left in '{cfg.outdir}'")
 
 
-def dump_coloured_diff(width, new_f, old_f=None):
-    line_so_far = 0
+class IndelPrinter:
+    html_header = ('<html>\n<body>\n<pre style="display: inline; '
+                   'white-space: pre-wrap; word-wrap: break-word; '
+                   'font-size: 110%; line-height: 1.3em; '
+                   'color: #000000;">')
+    html_footer = '</pre>\n</body>\n</html>'
+    html_end_span = '</span>'
+    html_new_span = ('<span style="background-color: %s; '
+                     'padding-bottom: 0.2em;">')
     
-    def coloured_print(mode, s: str):
-        nonlocal line_so_far
+    def __init__(self, outformat: str, width: int = 80):
+        if outformat == 'ANSI':
+            self.colour = {'M': colorama.Style.RESET_ALL,
+                           'd': colorama.Back.RED,
+                           'i': colorama.Back.GREEN}
+            self.last_mode = 'M'
+        elif outformat == 'HTML':
+            self.colour = {'M': self.html_new_span % ('#FFFFFF'),
+                           'd': self.html_new_span % ('#FF8888'),
+                           'i': self.html_new_span % ('#88FF88')}
+            self.last_mode = None
+            print(self.html_header)
+        else:
+            raise RuntimeError(f"Unknown outpur format '{outformat}'")
         
-        out = s             # default = match ('M')
-        if mode == 'd':     # deletion
-            out = colored.stylize(s, colored.bg('dark_red_1'))
-        elif mode == 'i':   # insertion
-            out = colored.stylize(s, colored.bg('dark_green'))
-        
-        print(out, end='')
-        line_so_far += len(s)
+        self.outformat = outformat
+        self.width = width
+        self.line_so_far = 0
     
-    spacer, spacer_type, spacer_mode = False, None, None
-    
-    def printer(mode, content):
-        nonlocal spacer, spacer_type, spacer_mode
-        nonlocal width, line_so_far
+    def indel_print(self, mode, s: str):
+        if mode not in ('M', 'd', 'i'):
+            raise RuntimeError(f"Unknown mode '{mode}'")
         
+        if self.last_mode != mode:
+            if self.outformat == 'HTML' and self.last_mode is not None:
+                print(self.html_end_span, end='')
+            
+            print(self.colour[mode], end='')
+        
+        print(s, end='')
+        self.last_mode = mode
+        self.line_so_far += len(s)
+    
+    def newline(self):
+        if self.outformat == 'ANSI' and self.last_mode != 'M':
+            print(self.colour['M'])
+            print(self.colour[self.last_mode], end='')
+        else:
+            print()
+        
+        self.line_so_far = 0
+    
+    def EOF(self):
+        """end of file - called after each codeling"""
+        if self.outformat == 'ANSI':
+            self.indel_print('M', '')
+        elif self.outformat == 'HTML':
+            self.indel_print('M', ' ' * self.width)
+        
+        self.newline()
+    
+    def EOT(self):
+        """end of transmission - called at the very end"""
+        if self.outformat == 'HTML':
+            print(self.html_footer)
+
+
+class CodelangDiff:
+    def __init__(self, prtr: 'IndelPrinter', new_f, old_f=None):
+        """Arguments:
+        
+          prtr      where to send the diff
+          new_f     new codelang function in token format
+          old_f     old codelang function in token format
+        
+        where the token format produced by codelang.Instr.desc(token=True)
+        looks like eg
+        
+          [('M', 'local.get x'), ('-', '0'), ('+', '1'), ('S', ' 1'),
+           ('=', 'varID='), ('V', '1'), ('N', ''), ...]
+        
+        where the the token types are as follows:
+        
+          ' '       spacer
+          'M'       mnemonic
+          '-'       pop from stack
+          '+'       push onto stack
+          'S'       stack size after the instruction (Instr.stack_after)
+          '='       immediate name
+          'V'       immediate value
+          'N'       new line
+        
+        so the list would get translated into:
+        
+          'local.get x              -0   +1   [ 1]      varID=1\n...'
+        
+        """
+        self.posn = {'M': 0, '-': 25, '+': 30, 'S': 35, '=': 45, 
+                     'N': prtr.width}
+        self.spacer = False
+        self.last_type = None   # type = {spacer, mnemonic, pop, ...}
+        self.last_mode = None   # mode = {match, insertion, deletion}
+        self.init_spaces = 0
+        self.prtr = prtr
+        
+        self.diff(new_f, old_f)
+    
+    def printer(self, mode, content):
         for i_type, i in content:
-            if i_type == 'N':
-                spacer = ' '*(width - line_so_far)
-            
-            if spacer and spacer_type != i_type:
-                if 'M' in (mode, spacer_mode):
-                    coloured_print('M', spacer)
+            if i_type in self.posn:
+                if i_type == 'N':
+                    so_far = self.prtr.line_so_far
                 else:
-                    coloured_print(mode, spacer)
-            
-            if i_type == 'M':               # mnemonic
-                coloured_print(mode, i)
-                spacer = ' '*(20 - len(i))
-            elif i_type in ('-', '+'):      # pop, push
-                coloured_print(mode, i_type + i)
-                spacer = ' '
-            elif i_type == 'S':             # stack size (aka stack_after)
-                coloured_print(mode, '[' + i + ']')
-                spacer = '   '
-            elif i_type in ('=', ' '):      # immediate type, spacer
-                coloured_print(mode, i)
-                spacer = False
-            elif i_type == 'V':             # immediate value
-                coloured_print(mode, i)
-                spacer = ' '
-            elif i_type == 'N':             # new line
-                print()
-                spacer = False
-                line_so_far = 0
+                    so_far = self.prtr.line_so_far - self.init_spaces
                 
-            spacer_type = i_type
-            spacer_mode = mode
+                new_spaces = self.posn[i_type] - so_far
+                if not self.spacer or len(self.spacer) < new_spaces:
+                    self.spacer = ' ' * new_spaces
+            
+            if self.spacer:
+                if i_type == 'N':
+                    self.prtr.indel_print(mode, self.spacer)
+                elif self.last_type != i_type:
+                    if ('M' in (mode, self.last_mode) or 
+                            (mode == 'd' and self.last_mode == 'i')):
+                        self.prtr.indel_print('M', self.spacer)
+                    else:
+                        self.prtr.indel_print(mode, self.spacer)
+                
+                self.spacer = False
+            
+            if i_type == ' ':               # spacer
+                if self.prtr.line_so_far == self.init_spaces:
+                    self.init_spaces += len(i)
+                self.prtr.indel_print(mode, i)
+            if i_type == 'M':               # mnemonic
+                self.prtr.indel_print(mode, i)
+            elif i_type in ('-', '+'):      # pop, push
+                self.prtr.indel_print(mode, i_type + i)
+            elif i_type == 'S':             # stack size (aka stack_after)
+                self.prtr.indel_print(mode, '[' + i + ']')
+            elif i_type in ('='):           # immediate name
+                self.prtr.indel_print(mode, i)
+            elif i_type == 'V':             # immediate value
+                self.prtr.indel_print(mode, i)
+                self.spacer = ' '
+            elif i_type == 'N':             # new line
+                self.prtr.newline()
+                self.init_spaces = 0
+                
+            self.last_type = i_type
+            self.last_mode = mode
     
-    def tidy_NL(diff):
-        nonlocal new_f, old_f
-        
+    @staticmethod
+    def expand_replaces(diff, old_f, new_f):
+        for item in diff:
+            tag, old_s, old_e, new_s, new_e = item  # _s = start, _e = end
+            if tag != 'replace':
+                yield item
+                continue
+            
+            if ((old_e-old_s == 1 or new_e-new_s == 1) and
+                old_f[old_s][0] == new_f[new_s][0] and
+                old_f[old_s][0] in ('S', 'V')):
+                # special case of a matching singleton, e.g.
+                # 
+                #   <replace> a1 b2 c3 <with> a2 </replace>
+                # 
+                # expanded to:
+                # 
+                #   <del> a1 </del> <ins> a2 </ins> <del> b2 c3 </del>
+                # 
+                yield ['delete', old_s, old_s+1, new_s, new_s]
+                yield ['insert', old_s+1, old_s+1, new_s, new_s+1]
+                
+                if old_e - old_s > 1:
+                    yield ['delete', old_s+1, old_e, new_s+1, new_s+1]
+                
+                if new_e - new_s > 1:
+                    yield ['insert', old_e, old_e, new_s+1, new_e]
+            else:
+                # standard expansion, e.g.
+                # 
+                #   <replace> a1 b2 <with> c3 </replace>
+                # 
+                # expanded to:
+                # 
+                #   <del> a1 b2 </del> <ins> c3 </ins>
+                # 
+                yield ['delete', old_s, old_e, new_s, new_s]
+                yield ['insert', old_e, old_e, new_s, new_e]
+    
+    @staticmethod
+    def tidy_up_isolated_dels(diff: list, old_f):
         #          0      1          2        3          4
         # item = (tag, old_start, old_end, new_start, new_end)
-        d = [list(item) for item in diff.get_opcodes()]
-        
-        for i in range(1, len(d)):
-            if d[i][0] == 'delete' and d[i-1][0] == d[i+1][0] == 'equal':
+        for i in range(1, len(diff)-1):
+            if diff[i][0]=='delete' and diff[i-1][0]==diff[i+1][0]=='equal':
+                # misassigned ambiguous starts, e.g. change:
+                # 
+                #   spacer  <del> mnemonic ... newline
+                #   spacer </del>
+                # 
+                # to:
+                # 
+                #    <del> spacer mnemonic ... newline
+                #   </del> spacer
+                # 
                 j = 0
-                prev_old_start = d[i-1][1]
-                old_start = d[i][1]
-                old_end = d[i][2]
-                while (prev_old_start <= old_start-j-1 and \
-                       old_f[old_start-j-1] == old_f[old_end-j-1] and \
+                prev_old_start = diff[i-1][1]
+                old_start, old_end = diff[i][1:3]
+                while (prev_old_start <= old_start-j-1 and
+                       old_f[old_start-j-1] == old_f[old_end-j-1] and
                        old_f[old_start-j-1][0] != 'N'):
                     j += 1
                 
                 if j > 0:
-                    d[i-1][2] -= j      # old_end
-                    d[i-1][4] -= j      # new_end
-                    
-                    d[i][1:] = [val-j for val in d[i][1:]]
-                    
-                    d[i+1][1] -= j      # old_start
-                    d[i+1][3] -= j      # new_start
+                    diff[i-1][2] -= j       # old_end
+                    diff[i-1][4] -= j       # new_end
+                    diff[i][1:] = [val-j for val in diff[i][1:]]
+                    diff[i+1][1] -= j       # old_start
+                    diff[i+1][3] -= j       # new_start
                 
+                # misassigned ambiguous ends, e.g. change:
+                # 
+                #   mnemonic1 ... stack1  <del> newline
+                #   mnemonic2 ... stack2 </del> newline
+                # 
+                # to:
+                # 
+                #          mnemonic1 ... stack1 newline
+                #    <del> mnemonic2 ... stack2 newline
+                #   </del>
+                # 
                 j = 0
-                next_old_end = d[i+1][2]
-                while (old_end+j < next_old_end and \
-                       old_f[old_start+j] == old_f[old_end+j] and \
-                       old_f[old_start+j][0] != 'N'):
+                next_old_end = diff[i+1][2]
+                while (old_end+j < next_old_end and
+                       old_f[old_start+j] == old_f[old_end+j]):
                     j += 1
+                    if old_f[old_start+(j-1)][0] == 'N': break
                 
                 if j > 0:
-                    d[i-1][2] += j      # old_end
-                    d[i-1][4] += j      # new_end
-                    
-                    d[i][1:] = [val+j for val in d[i][1:]]
-                    
-                    d[i+1][1] += j      # old_start
-                    d[i+1][3] += j      # new_start
+                    diff[i-1][2] += j       # old_end
+                    diff[i-1][4] += j       # new_end
+                    diff[i][1:] = [val+j for val in diff[i][1:]]
+                    diff[i+1][1] += j       # old_start
+                    diff[i+1][3] += j       # new_start
+        return diff
+    
+    @staticmethod
+    def tidy_up_dels_missing_final_NL(diff: list, old_f):
+        yield diff[0]
         
-        return d
+        #          0      1          2        3          4
+        # item = (tag, old_start, old_end, new_start, new_end)
+        for i in range(1, len(diff)-1):
+            # if a deletion is missing a final newline, if possible steal it
+            # from itself by breaking it into two
+            # 
+            # e.g. change:
+            # 
+            #   mnemonic1 ... stack1  <del> imms newline
+            #   mnemonic2 ... stack2 </del> newline
+            # 
+            # to:
+            # 
+            #          mnemonic1 ... stack1 <del> imms </del> newline
+            #    <del> mnemonic2 ... stack2 newline
+            #   </del>
+            # 
+            tag, old_start, old_end, new, _ = diff[i]
+            next_tag = diff[i+1][0]
+            if (tag == 'delete' and next_tag == 'equal' and
+                old_f[old_end][0] == 'N'):
+                
+                deletion = enumerate(old_f[old_end-1:old_start-1:-1])
+                try:
+                    d = next(i for i, item in deletion if item[0] == 'N')
+                except StopIteration:
+                    yield diff[i]
+                    continue
+                
+                yield ['delete', old_start, old_end-d-1, new, new]
+                yield ['equal', old_end-d-1, old_end-d, new, new+1]
+                yield ['delete', old_end-d, old_end+1, new+1, new+1]
+                
+                diff[i+1][1] += 1       # old_start
+                diff[i+1][3] += 1       # new_start
+            else:
+                yield diff[i]
+        
+        if len(diff) > 1:
+            yield diff[-1]
     
-    if old_f is None:
-        printer('M', new_f)
-        return
-    
-    d = difflib.SequenceMatcher(None, old_f, new_f)
-    for tag, old_start, old_end, new_start, new_end in tidy_NL(d):
-        if tag == 'delete':
-            printer('d', old_f[old_start:old_end])
-        elif tag == 'equal':
-            printer('M', old_f[old_start:old_end])
-        elif tag == 'insert':
-            printer('i', new_f[new_start:new_end])
-        elif tag == 'replace':
-            printer('d', old_f[old_start:old_end])
-            printer('i', new_f[new_start:new_end])
-        else:
-            raise RuntimeError(f"uknown tag '{tag}'")
-
+    def diff(self, new_f, old_f=None):
+        if old_f is None:
+            printer('M', new_f)
+            return
+        
+        d = difflib.SequenceMatcher(None, old_f, new_f).get_opcodes()
+        d = [list(item) for item in d]
+        d = CodelangDiff.expand_replaces(d, old_f, new_f)
+        d = CodelangDiff.tidy_up_isolated_dels(list(d), old_f)
+        d = CodelangDiff.tidy_up_dels_missing_final_NL(d, old_f)
+        
+        for tag, old_start, old_end, new_start, new_end in d:
+            if tag == 'delete':
+                self.printer('d', old_f[old_start:old_end])
+            elif tag == 'equal':
+                self.printer('M', old_f[old_start:old_end])
+            elif tag == 'insert':
+                self.printer('i', new_f[new_start:new_end])
+            else:
+                raise RuntimeError(f"uknown tag '{tag}'")
+        
+        self.prtr.EOF()
 
 
 def history(cfg: 'Config', json_fnames: list):
-    dw = 25
-    fin = '-'*dw + ' FINAL VERSION ' + '-'*dw
-    width = len(fin)
-    
     cdls = {}
     def get(json_fname: str = None, ID: str = None):
         nonlocal cfg, cdls
         if ID is not None:
             if ID in cdls: return
-            json_fname = os.path.join(cfg.histdir, parent + '.json')
+            json_fname = os.path.join(cfg.histdir, ID + '.json')
         
         cdl = Codeling(cfg, json_fname=json_fname)
         targ = 0
@@ -897,18 +1095,20 @@ def history(cfg: 'Config', json_fnames: list):
     for fn in json_fnames:
         get(json_fname=fn)
     
+    prtr = IndelPrinter(outformat=cfg.format)
+    
     for _, cdl in sorted(cdls.items()):
         print(json.dumps(cdl.json, indent=3))
-        lp = len(cdl.json['parents'])
-        if lp == 0:
-            dump_coloured_diff(width, cdl._f, [])
-        elif lp == 1:
-            p_f = cdls[cdl.json['parents'][0]]._f
-            dump_coloured_diff(width, cdl._f, p_f)
+        len_parents = len(cdl.json['parents'])
+        if len_parents == 0:
+            CodelangDiff(prtr, cdl._f, [])
+        elif len_parents == 1:
+            parent_f = cdls[cdl.json['parents'][0]]._f
+            CodelangDiff(prtr, cdl._f, parent_f)
         else:
             raise RuntimeError('can only handle up to 1 parent')
-        
-        print()
+    
+    prtr.EOT()
 
 
 def LEB128_test():
@@ -999,6 +1199,7 @@ def main():
         ('mtfn', 'ins'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
+        ('format', 'ANSI'),
         ('template_file', 'template.wasm'))
     
     # if the user has already set the option in Config.py, keep their value
@@ -1050,8 +1251,8 @@ def main():
         if hasattr(codelang.Function, fn):
             return s
         else:
-            raise argparse.ArgumentTypeError\
-                (f"there is no '{fn}' in codelang.Function")
+            raise argparse.ArgumentTypeError(
+                f"there is no '{fn}' in codelang.Function")
     
     def type_dir_str(s: str):
         if os.path.isdir(s):
@@ -1097,7 +1298,7 @@ def main():
         help=f"""Look at all codelings in '{cfg.outdir}' and remove those that 
         are duplicates of (i.e. have the same code as) codelings in 
         '{cfg.indir}' or earlier codelings in '{cfg.outdir}'.""")
-    cmds.add_argument('-history', type=type_json, metavar='json(s)', nargs='+',
+    cmds.add_argument('-history', type=type_json, metavar='json', nargs='+',
         help=f"""Print the history of a particular codeling stored in the 
         'json' file (NB must end in '.json') by recursively looking up its 
         parents in '{cfg.histdir}'. Also accepts several 'json' files, e.g. 
@@ -1106,15 +1307,17 @@ def main():
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
         below for details), equivalent to repeatedly running this script with 
-        '-length 1', '-length 2', ..., '-length L' (e.g. '-upto -length 5').""")
+        '-length 1', '-length 2', ..., '-length L'
+        (e.g. '-upto -length 5').""")
     parser.add_argument('-length', type=type_int_ish, metavar='L',
         help=f"""For options that produce new codelings, set the 'length' 
         parameter to L. This parameter has slightly different meanings 
-        depending on which method for generating or mutating codelings is used: 
-        for -rnd0 it is the length of the new random strings in bytes, for 
-        -gen0 it is the minimum number of instructions in the new codelings, 
-        and for -mutate is the minimum number of instructions changed in the 
-        parent to produce the new codelings. (Default: {cfg.length})""")
+        depending on which method for generating or mutating codelings is 
+        used: for -rnd0 it is the length of the new random strings in bytes, 
+        for -gen0 it is the minimum number of instructions in the new 
+        codelings, and for -mutate is the minimum number of instructions 
+        changed in the parent to produce the new codelings.
+        (Default: {cfg.length})""")
     parser.add_argument('-fuel', type=type_int_ish, metavar='F', 
         help=f"""When running a WebAssembly function, provide it with F units 
         of fuel. This limits the number of instructions that will be executed 
@@ -1131,8 +1334,8 @@ def main():
     parser.add_argument('-mtfn', type=type_mtfn, metavar='name',
         help=f"""Mutator function to use, e.g. 'ins' for 
         'codelang.Function.mutator_ins()'. '-mtfn list' lists all available
-        mutator functions along with their descriptions. (Default:
-        '{cfg.mtfn}')""")
+        mutator functions along with their descriptions.
+        (Default: '{cfg.mtfn}')""")
     parser.add_argument('-thresh', type=type_int_ish, metavar='T',
         help=f"""Codelings with score >= T (e.g. '0x5f') are saved to
         '{cfg.outdir}'. For existing codelings (e.g. those taken from
@@ -1140,34 +1343,39 @@ def main():
         want to use a negative threshold, try '" -0x40"' - note the quotation
         marks and the initial space. (Default: {default_T})""")
     parser.add_argument('-indir', type=type_dir_str, metavar='path',
-        help=f"""Change the input directory to 'path'. (Default: 
-        '{cfg.indir}')""")
+        help=f"""Change the input directory to 'path'.
+        (Default: '{cfg.indir}')""")
     parser.add_argument('-outdir', type=type_dir_str, metavar='path',
-        help=f"""Change the output directory to 'path'. (Default:
-        '{cfg.outdir}')""")
+        help=f"""Change the output directory to 'path'.
+        (Default: '{cfg.outdir}')""")
     parser.add_argument('-nproc', type=type_int_ish, metavar='N', 
         help=f"""Set the number of worker processes to use in the pool to N. 
         (Default for this machine: {cfg.nproc})""")
+    parser.add_argument('-format', choices=['ANSI', 'HTML'], 
+        help=f"""Set the output format used by the -history option colour 
+        mark-up to either the ANSI terminal escape sequences or simple HTML 
+        with inline styles. Ignored when used with any other option. (Default: 
+        {cfg.format})""")
     
     parser.add_argument('runid', type=str, nargs='?',
-        help=f"""Identifier for this run (e.g. 'run01'). All codelings produced 
-        during the run will have identifiers of the form 'runid-012345678901', 
-        i.e. the run identifier followed by a dash and twelve digits (with most 
-        of the leading ones being zero). The run identifier is a required 
-        argument for all types of runs except '-score' and '-uniq' where no new 
-        codelings are produced.""")
+        help=f"""Identifier for this run (e.g. 'run01'). All codelings 
+        produced during the run will have identifiers of the form 
+        'runid-012345678901', i.e. the run identifier followed by a dash and 
+        twelve digits (with most of the leading ones being zero). The run 
+        identifier is a required argument for all types of runs except 
+        '-score' and '-uniq' (where no new codelings are produced).""")
     
     args = parser.parse_args()
     
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
     if any([a is not None for a in new_cdls]) and args.runid is None:
-        parser.error("'runid' is required for all runs except " \
+        parser.error("'runid' is required for all runs except "
                      "'-score' and '-uniq'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    l = 'length fuel scfn mtfn thresh indir outdir nproc runid'
+    l = 'length fuel scfn mtfn thresh indir outdir nproc runid format'
     for param in l.split():
         a = getattr(args, param)
         if a is not None or param == 'runid':
