@@ -39,11 +39,14 @@ def comment(s: str) -> str:
     return re.sub(r'^', '# ', s, flags=re.MULTILINE)
 
 
-def link2dir(f: str, d: str) -> None:
+def link2dir(f: str, d: str) -> str:
+    outf = os.path.join(d, os.path.basename(f))
     try:
-        os.link(f, os.path.join(d, os.path.basename(f)))
+        os.link(f, outf)
     except FileExistsError:
         pass
+    
+    return outf
 
 
 class Codeling:
@@ -535,6 +538,7 @@ class Codeling:
         
         if self.cfg.thresh is not None and res.score >= self.cfg.thresh:
             res.status = 'accept'
+            res.code = self.json['code']
             
             if in_memory:
                 self.write_wasm(wasm_bytes, self.cfg.outdir)
@@ -543,8 +547,9 @@ class Codeling:
             
             if self._json_fname is None:
                 self.write_json(self.cfg.outdir)
+                res.json_fname = self._json_fname
             else:
-                link2dir(self._json_fname, self.cfg.outdir)
+                res.json_fname = link2dir(self._json_fname, self.cfg.outdir)
         else:
             res.status = 'reject'
         
