@@ -84,6 +84,9 @@ class Codeling:
         self._json_fname = None
         self._wasm_fname = None
         
+        # used by mutate
+        self._baseline_score = None
+        
         # ... but save the param we've been passed
         # NB read_wasm() is an important part of scoring (validation step)
         # and takes place at that point
@@ -259,8 +262,10 @@ class Codeling:
             'parents': [],
             'created_by': self.cfg.this_script_release + ' ' + desc}
     
-    def mutate(self, ID: str, L: int, json_source: str) -> bool:
+    def mutate(self, ID: str, L: int, json_source: str,
+               baseline_score: int = None) -> bool:
         source_cdl = Codeling(self.cfg, json_fname=json_source)
+        self._baseline_score = baseline_score
         targ = 0
         f = codelang.Function(parse=(source_cdl.b(), targ))
         retval = f.mutate(self.cfg.mtfn, L)
@@ -536,7 +541,13 @@ class Codeling:
             score_fn = getattr(self, 'score_' + self.cfg.scfn)
             res = score_fn()
         
-        if self.cfg.thresh is not None and res.score >= self.cfg.thresh:
+        if self._baseline_score is not None:
+            res.score -= self._baseline_score
+        
+        if self.cfg.baseline_run:
+            res.status = 'reject'
+            res.json_fname = self._json_fname
+        elif self.cfg.thresh is not None and res.score >= self.cfg.thresh:
             res.status = 'accept'
             res.code = self.json['code']
             

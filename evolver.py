@@ -40,46 +40,46 @@ def stop_check(cdl_gtor) -> 'codeling.Codeling':
         else:
             yield cdl
 
-
 def _init_pool_worker():
     # ignore SIGINT in pool workers
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
-def _score_Codeling(cdl: 'codeling.Codeling'):
+def _cdl_score(cdl: 'codeling.Codeling'):
     return cdl.score()
 
 
-def score_Codelings(cfg: 'config.Config', cdl_gtor) -> None:
-    IDlen = len(cfg.runid) + 13 if cfg.runid is not None else 20
-    times = 't_gen t_valid t_run t_score'.split()
-    t_start = time.time()
-    seen_code = {}
-    
-    print('#', ' '.join(sys.argv))
-    
-    if cfg.thresh is None:
-        thresh = 'no threshold'
+def score_Codelings(cfg: 'config.Config', cdl_gtor):
+    if cfg.baseline_run:
+        thresh = 'baseline run'
+        baseline_scores = {}
     else:
-        thresh = f"thresh={cfg.thresh:#x}"
+        if cfg.thresh is None:
+            thresh = 'no threshold (all codelings rejected)'
+        else:
+            thresh = 'diff ' if cfg.diff else ''
+            thresh += f"thresh={cfg.thresh:#x}"
     
-    print('# Release ' + cfg.release,
-          'Codeling.score_' + cfg.scfn + '()',
-          thresh, sep=', ')
+    print(f"# Release {cfg.release}, Codeling.score_{cfg.scfn}(), {thresh}")
     
-    if cfg.thresh is None:
-        print("# 'No threshold' means that all codelings will be rejected")
-    
-    if not cfg.keep_all:
-        print(f"# Reading '{cfg.indir}' to keep new codelings unique ...")
+    if not (cfg.baseline_run or cfg.keep_all):
+        print(f"# Reading '{cfg.indir}' to keep new codelings unique ... ",
+              end='')
+        seen_code = {}
         for json_fname in all_json_fnames(cfg.indir):
             cdl = codeling.Codeling(cfg, json_fname=json_fname)
             seen_code[cdl.json['code']] = json_fname
+        
+        print('done')
     
+    t_start = time.time()
     print('# Scoring started:', util.nice_now())
+        
     print('#')
     print("# All times below are in microseconds, the scores are in hex")
     
+    IDlen = len(cfg.runid) + 13 if cfg.runid is not None else 20
+    times = 't_gen t_valid t_run t_score'.split()
     hs = [f"{s:>7}" for s in (*times, *'fuel score status'.split(), 'n_acc ')]
     print(f"{'# ID':{IDlen}}", *hs, 'description', sep="\t")
     
@@ -90,11 +90,11 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor) -> None:
         # `.imap` because `.map` converts the iterable to a list
         # `_unordered` because don't care about order, really
         # *** when debugging use `map` instead for cleaner error messages ***
-        for r in map(_score_Codeling, cdl_gtor):
-        #for r in p.imap_unordered(_score_Codeling, cdl_gtor, chunksize=20):
+        #for r in map(_cdl_score, cdl_gtor):
+        for r in p.imap_unordered(_cdl_score, cdl_gtor, chunksize=20):
             n_scored += 1
             
-            if r.status == 'accept' and not cfg.keep_all:
+            if r.status == 'accept' and not (cfg.baseline_run or cfg.keep_all):
                 if r.code in seen_code:
                     r.status = 'reject'
                     r.desc = f"duplicate of '{seen_code[r.code]}'"
@@ -110,6 +110,9 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor) -> None:
             ts = [f"{s:>7}" for s in (*micros, r.fuel, f"{r.score:x}",
                                       r.status, f"{n_accepted} ")]
             print(f"{r.ID:{IDlen}}", *ts, r.desc, sep="\t")
+            
+            if cfg.baseline_run:
+                baseline_scores[r.json_fname] = r.score
             
             if n_scored % 100_000 == 0:
                 if n_scored == 100_000:
@@ -131,6 +134,9 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor) -> None:
     print('# Scoring finished:', util.nice_now())
     print(f"# Scoring throughput: {n_scored/(time.time()-t_start)*3600:.2e} "
           f"scored/hour")
+    
+    if cfg.baseline_run:
+        return baseline_scores
 
 
 def all_json_fnames(d: str):
@@ -157,15 +163,21 @@ def gtor_gen0(cfg: 'config.Config', Ls, N: int) -> 'codeling.Codeling':
             yield codeling.Codeling(cfg, gen0=(ID, L), deferred=True)
 
 
-def gtor_mutate(cfg: 'config.Config', Ls, N: int) -> 'codeling.Codeling':
+def gtor_mutate(cfg: 'config.Config', Ls, N: int, 
+                baseline_scores) -> 'codeling.Codeling':
     cdl_i = 0
     for i in range(N):
         for json_fname in all_json_fnames(cfg.indir):
             for L in Ls:
                 ID = f"{cfg.runid}-{cdl_i:012}"
                 cdl_i += 1
-                yield codeling.Codeling(cfg, mutate=(ID, L, json_fname),
-                                        deferred=True)
+                if baseline_scores is not None:
+                    baseline_score = baseline_scores[json_fname]
+                else:
+                    baseline_score = None
+                
+                mutate = (ID, L, json_fname, baseline_score)
+                yield codeling.Codeling(cfg, mutate=mutate, deferred=True)
 
 
 # TODO XXX uses LastID, needs a rewrite
@@ -424,7 +436,7 @@ def main():
     cmds.add_argument('-concat', type=type_int_ish, metavar='gen',
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
-        X+Y by concatenating their codes. XXX TODO BROKEN""")
+        X+Y by concatenating their codes. XXX TODO: FIX, CURRENTLY BROKEN""")
     cmds.add_argument('-history', type=type_json, metavar='json', nargs='+',
         help=f"""Print the history of a particular codeling stored in the 
         'json' file (NB must end in '.json') by recursively looking up its 
@@ -463,18 +475,26 @@ def main():
         'codelang.Function.mutator_ins()'. '-mtfn list' lists all available
         mutator functions along with their descriptions.
         (Default: '{cfg.mtfn}')""")
+    parser.add_argument('-diff', action='store_true',
+        help=f"""The default setting is that the threshold T (see '-thresh' 
+        below for details) is absolute, i.e. any codeling saved to 
+        '{cfg.indir}' must have a score >= T. The '-diff' option changes this 
+        to the difference between the codeling's own score and that of its 
+        best-scoring parent, i.e. the test becomes score - best_parent >= 
+        T.""")
     parser.add_argument('-thresh', type=type_int_ish, metavar='T',
-        help=f"""Codelings with score >= T (e.g. '0x5f') are saved to
-        '{cfg.outdir}'. For existing codelings (e.g. those taken from
-        '{cfg.indir}') this creates hard links to the originals. If you ever
-        want to use a negative threshold, try '" -0x40"' - note the quotation
-        marks and the initial space. (Default: {default_T})""")
+        help=f"""Codelings with score >= T (e.g. '0x5f') are saved to 
+        '{cfg.outdir}'. For existing codelings (e.g. those taken from 
+        '{cfg.indir}') this creates hard links to the originals. If a negative 
+        threshold is needed, use e.g. '" -0x40"' - note the quotation marks 
+        and the initial space. (Default: {default_T})""")
     parser.add_argument('-keep-all', action='store_true',
-        help=f"""By default, newly generated codelings saved to 
-        '{cfg.outdir}' are kept unique, i.e. only codelings with new codes 
-        distinct from those already in '{cfg.indir}' and earlier entries in 
-        '{cfg.outdir}' are kept. When this option is applied, all newly 
-        generated codelings above the threshold are kept.""")
+        help=f"""The default setting is that newly generated codelings saved 
+        to '{cfg.outdir}' are kept unique, i.e. they are only kept in 
+        '{cfg.outdir}' if their code is different from other codelings already 
+        in '{cfg.outdir}' as well as all the input codelings in '{cfg.indir}'. 
+        When the '-keep-all' option is used, all newly generated codelings 
+        above the threshold are saved to '{cfg.outdir}'.""")
     parser.add_argument('-indir', type=type_dir_str, metavar='path',
         help=f"""Change the input directory to 'path'.
         (Default: '{cfg.indir}')""")
@@ -485,7 +505,7 @@ def main():
         help=f"""Set the number of worker processes to use in the pool to N. 
         (Default for this machine: {cfg.nproc})""")
     parser.add_argument('-format', choices=['ANSI', 'HTML'], 
-        help=f"""Set the output format used by the -history option colour 
+        help=f"""Set the output format used by the '-history' option colour 
         mark-up to either the ANSI terminal escape sequences or simple HTML 
         with inline styles. Ignored when used with any other option. (Default: 
         {cfg.format})""")
@@ -501,17 +521,21 @@ def main():
     args = parser.parse_args()
     
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
-    if any([a is not None for a in new_cdls]) and args.runid is None:
+    if any(a is not None for a in new_cdls) and args.runid is None:
         parser.error("'runid' is required for all runs except '-score'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    l = 'length fuel scfn mtfn thresh keep_all indir outdir nproc runid format'
-    for param in l.split():
-        a = getattr(args, param)
-        if a is not None or param == 'runid':
-            setattr(cfg, param, a)
+    if args.diff and args.score:
+        parser.error("'-diff' cannot be used with '-score'")
+    
+    keep_params = ('fuel scfn mtfn thresh diff keep_all '
+                   'indir outdir nproc runid format')
+    for param in keep_params.split():
+        val = getattr(args, param)
+        if val is not None or param == 'runid':
+            setattr(cfg, param, val)
     
     if args.score:
         cfg.runid = None
@@ -522,26 +546,41 @@ def main():
     else:
         Ls = (cfg.length,)
     
-    gtor = None
-    
-    if args.score:
-        gtor = gtor_score(cfg)
-    elif args.rnd0 is not None:
-        sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
-    elif args.gen0 is not None:
-        gtor = gtor_gen0(cfg, Ls, args.gen0)
-    elif args.mutate is not None:
-        gtor = gtor_mutate(cfg, Ls, args.mutate)
-    elif args.concat is not None:
-        gtor = gtor_concat(cfg, args.concat)
-    elif args.history:
+    if args.history:
         history(cfg, args.history)
         return
+    elif args.rnd0 is not None:
+        sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
     
     with open(cfg.template_file, "rb") as f:
         cfg.template = f.read()
     
     signal.signal(signal.SIGINT, SIGINT_handler)
+    
+    print('#', ' '.join(sys.argv))
+    print('#')
+    
+    if cfg.diff:
+        print(f"# Baseline scores for all codelings in '{cfg.indir}'")
+        cfg.baseline_run = True
+        baseline_scores = score_Codelings(cfg, stop_check(gtor_score(cfg)))
+        print('#')
+        print('# Main run')
+    else:
+        baseline_scores = None
+    
+    if args.score:
+        gtor = gtor_score(cfg)
+    elif args.gen0 is not None:
+        gtor = gtor_gen0(cfg, Ls, args.gen0)
+    elif args.mutate is not None:
+        gtor = gtor_mutate(cfg, Ls, args.mutate, baseline_scores)
+    elif args.concat is not None:
+        gtor = gtor_concat(cfg, args.concat)
+    else:
+        gtor = None
+    
+    cfg.baseline_run = False
     score_Codelings(cfg, stop_check(gtor))
 
 
