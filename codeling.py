@@ -353,7 +353,7 @@ class Codeling:
         else:
             out = self.get_out()
             
-            if len(out) == 0:
+            if not out:
                 score, desc = -0x20, 'no output to out'
             else:
                 writes = [i + self.out_addr for i, b in enumerate(out) if b]
@@ -390,7 +390,7 @@ class Codeling:
             desc += ', overwrote header'
         
         out = self.get_out()
-        if len(out) == 0:
+        if not out:
             score -= 0x40
             desc += ', no output to out'
         else:
@@ -427,7 +427,7 @@ class Codeling:
             desc += ',hdr'
         
         out = self.get_out()
-        if len(out) == 0:
+        if not out:
             desc += ':-'
         else:
             score += 0x200
