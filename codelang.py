@@ -1378,7 +1378,7 @@ class Function:
                     start: int = None,
                     end: int = None) -> bool:
         """Delete several non-block instructions and/or whole blocks, but
-        do  not add any new ones. The deleted region must be stack-neutral
+        do not add any new ones. The deleted region must be stack-neutral
         (pop-push = 0).
         
         At least `length` instructions are deleted.
