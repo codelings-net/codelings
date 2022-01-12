@@ -211,7 +211,7 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
         cdls[cdl.json['ID']] = cdl_res(cdl, res)
     
     def earliest_ancestors(cdl_ID: str):
-        """earliest ancestor(s) still in cfg.outdir"""
+        """earliest ancestor(s) still in cfg.indir"""
         if cdl_ID not in cdls:
             return None
         else:
@@ -221,7 +221,6 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
     
     fams = {}
     def family_ID(cdl_ID: str):
-        """temporary mapping until families are finalised"""
         for fam_ID, fam in fams.items():
             if cdl_ID in fam:
                 return fam_ID
@@ -232,7 +231,6 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
     for cdl_ID in cdls:
         eas = earliest_ancestors(cdl_ID)
         fam_IDs = sorted(set(filter(None, map(family_ID, eas))))
-        
         if not fam_IDs:
             # start a new family
             fam_ID = sorted(eas)[0]
@@ -267,25 +265,67 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
         print()
 
 
-def history(cfg: 'config.Config', json_fnames: list):
+def find_codeling(cfg: 'config.Config', json_or_ID: str):
+    j = json_or_ID
+    if not j.endswith('.json'):
+        j += '.json'
+    
+    for d in ('', cfg.outdir, cfg.indir, cfg.histdir):
+        f = os.path.join(d, j)
+        if os.path.isfile(f):
+            return f
+    
+    raise RuntimeError(f"cannot find JSON file or codeling ID '{json_or_ID}'")
+
+
+def fetch_codelings(cfg: 'config.Config', json_or_IDs: list,
+                    incl_parents: bool = False):
     cdls = {}
-    def get(json_fname: str = None, ID: str = None):
-        nonlocal cfg, cdls
-        if ID is not None:
-            if ID in cdls: return
-            json_fname = os.path.join(cfg.histdir, ID + '.json')
+    
+    def fetch_codeling(json_or_ID: str):
+        nonlocal cfg, cdls, incl_parents
         
+        if json_or_ID in cdls:
+            return
+        
+        json_fname = find_codeling(cfg, json_or_ID)
         cdl = codeling.Codeling(cfg, json_fname=json_fname)
+        ID = cdl.json['ID']
+        if ID in cdls:
+            return
+        
         targ = 0
         gen = codelang.Function(parse=(cdl.b(), targ)).dump(tokens=True)
         cdl._f = [item for instr in gen for item in instr]
-        cdls[cdl.json['ID']] = cdl
-        for p in cdl.json['parents']:
-            get(ID=p)
+        cdls[ID] = cdl
+        
+        if incl_parents:
+            for p in cdl.json['parents']:
+                fetch_codeling(p)
     
-    for fn in json_fnames:
-        get(json_fname=fn)
+    for i in json_or_IDs:
+        if os.path.isdir(i):
+            for j in glob.glob(os.path.join(i, '*.json')):
+                fetch_codeling(j)
+        else:
+            fetch_codeling(i)
     
+    return cdls
+
+
+def dump(cfg: 'config.Config', json_or_IDs: list):
+    cdls = fetch_codelings(cfg, json_or_IDs)
+    prtr = codelang_diff.IndelPrinter(outformat=cfg.format)
+    
+    for _, cdl in sorted(cdls.items()):
+        print(json.dumps(cdl.json, indent=3))
+        codelang_diff.CodelangDiff(prtr, cdl._f, None)
+    
+    prtr.EOT()
+
+
+def history(cfg: 'config.Config', json_or_IDs: list):
+    cdls = fetch_codelings(cfg, json_or_IDs, incl_parents=True)
     prtr = codelang_diff.IndelPrinter(outformat=cfg.format)
     
     for _, cdl in sorted(cdls.items()):
@@ -464,17 +504,6 @@ def main():
         else:
             raise argparse.ArgumentTypeError(f"'{s}' is not a directory")
     
-    def type_json(s: str):
-        for fs in (s, os.path.join(cfg.indir, s)):
-            if os.path.isfile(fs):
-                if fs.endswith('.json'):
-                    return fs
-                else:
-                    msg = f"'{fs}' does not end in '.json'"
-                    raise argparse.ArgumentTypeError(msg)
-        
-        raise argparse.ArgumentTypeError(f"'{s}': no such file")
-    
     parser = argparse.ArgumentParser(
         description=main.__doc__, epilog=textwrap.dedent(epilogue),
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -506,14 +535,20 @@ def main():
         then provided that all three codelings are in '{cfg.indir}', all three 
         are in the same family. N highest-scoring codelings in each family are 
         saved to '{cfg.outdir}'. If two or more codelings in the same family 
-        have equal scores, they are sorted alphabetically by their identifiers 
-        and whichever comes first ('a' before 'b', '1' before '2' etc) is 
-        saved first.""")
-    cmds.add_argument('-history', type=type_json, metavar='json', nargs='+',
-        help=f"""Print the history of a particular codeling stored in the 
-        'json' file (NB must end in '.json') by recursively looking up its 
-        parents in '{cfg.histdir}'. Also accepts several 'json' files, e.g. 
-        via '-history out/*.json'.""")
+        have equal scores, they are sorted by their identifiers and whichever 
+        comes first alphabetically is the first to be saved.""")
+    cmds.add_argument('-dump', type=str, metavar='cdl', nargs='+', 
+        help=f"""Print out a codeling (or several codelings) including its 
+        parsed code. The parameter 'cdl' can be one of the following: a 
+        codeling JSON file (in which case it must end in '.json'), a codeling 
+        ID (in which case 'ID.json' is searched for in '{cfg.outdir}', 
+        '{cfg.indir}', '{cfg.histdir}', in that order, until the file is 
+        found), or a directory name (in which case all '.json' files in that 
+        directory get dumped).""")
+    cmds.add_argument('-history', type=str, metavar='cdl', nargs='+',
+        help=f"""Similar to '-dump' above, but also prints out the whole 
+        evolutionary history of each codeling, marking the changes in each 
+        generation (green for insertions, red for deletions).""")
     
     parser.add_argument('-upto', action='store_true',
         help=f"""For options that use the length parameter L (see '-length' 
@@ -601,9 +636,9 @@ def main():
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    if args.diff and any((args.score, args.family, args.history)):
-        parser.error("'-diff' cannot be used with '-score', '-family' or "
-                     "'-history'")
+    if args.diff and any((args.score, args.family, args.dump, args.history)):
+        parser.error("'-diff' cannot be used with '-score', '-family', "
+                     "'-dump' or '-history'")
     
     for param in ('length fuel scfn mtfn diff thresh keep_all '
                   'indir outdir nproc format runid').split():
@@ -623,7 +658,10 @@ def main():
     
     print('#', ' '.join(sys.argv))
     
-    if args.history:
+    if args.dump:
+        dump(cfg, args.dump)
+        return
+    elif args.history:
         history(cfg, args.history)
         return
     elif args.rnd0 is not None:
