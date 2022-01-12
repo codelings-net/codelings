@@ -195,6 +195,9 @@ class Codeling:
         self.create_instance(wasmtime.Module(self.store.engine, b))
     
     def link_json_wasm(self, outdir) -> None:
+        if self._wasm_fname is None:
+            self._wasm_fname = util.json2wasm(self._json_fname)
+        
         for f in (self._json_fname, self._wasm_fname):
             os.link(f, os.path.join(outdir, os.path.basename(f)))
     

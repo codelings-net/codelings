@@ -1,6 +1,7 @@
 # utility functions shared by `evolver.py`, `codeling.py` and `codelang.py`
 
 import random
+import re
 import time
 
 
@@ -15,6 +16,10 @@ def nice_now_UTC():
         in UTC in which the dst flag is always zero. "
     """
     return time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+
+
+def json2wasm(json_fname: str) -> str:
+    return re.sub(r'\.json$', '.wasm', json_fname)
 
 
 class ByteStream:

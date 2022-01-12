@@ -9,6 +9,7 @@ import util
 from types import SimpleNamespace as sns
 
 import argparse
+import collections
 import glob
 import json
 import multiprocessing
@@ -52,7 +53,7 @@ def _cdl_score(cdl: 'codeling.Codeling'):
 def score_Codelings(cfg: 'config.Config', cdl_gtor):
     if cfg.baseline_run:
         thresh = 'baseline run'
-        baseline_scores = {}
+        baseline_results = {}
     else:
         if cfg.thresh is None:
             thresh = 'no threshold (all codelings rejected)'
@@ -99,7 +100,7 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
                     r.status = 'reject'
                     r.desc = f"duplicate of '{seen_code[r.code]}'"
                     os.remove(r.json_fname)
-                    os.remove(json2wasm(r.json_fname))
+                    os.remove(util.json2wasm(r.json_fname))
                 else:
                     seen_code[r.code] = r.json_fname
             
@@ -112,7 +113,7 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
             print(f"{r.ID:{IDlen}}", *ts, r.desc, sep="\t")
             
             if cfg.baseline_run:
-                baseline_scores[r.json_fname] = r.score
+                baseline_results[r.json_fname] = r
             
             if n_scored % 100_000 == 0:
                 if n_scored == 100_000:
@@ -136,21 +137,17 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
           f"scored/hour")
     
     if cfg.baseline_run:
-        return baseline_scores
+        return baseline_results
 
 
 def all_json_fnames(d: str):
     return sorted(glob.glob(os.path.join(d, '*.json')))
 
 
-def json2wasm(json_fname: str) -> str:
-    return re.sub(r'\.json$', '.wasm', json_fname)
-
-
 def gtor_score(cfg: 'config.Config') -> 'codeling.Codeling':
     for json_fname in all_json_fnames(cfg.indir):
         yield codeling.Codeling(cfg, json_fname=json_fname,
-                                wasm_fname=json2wasm(json_fname),
+                                wasm_fname=util.json2wasm(json_fname),
                                 deferred=True)
 
 
@@ -164,15 +161,15 @@ def gtor_gen0(cfg: 'config.Config', Ls, N: int) -> 'codeling.Codeling':
 
 
 def gtor_mutate(cfg: 'config.Config', Ls, N: int, 
-                baseline_scores) -> 'codeling.Codeling':
+                baseline_results) -> 'codeling.Codeling':
     cdl_i = 0
     for i in range(N):
         for json_fname in all_json_fnames(cfg.indir):
             for L in Ls:
                 ID = f"{cfg.runid}-{cdl_i:012}"
                 cdl_i += 1
-                if baseline_scores is not None:
-                    baseline_score = baseline_scores[json_fname]
+                if baseline_results is not None:
+                    baseline_score = baseline_results[json_fname].score
                 else:
                     baseline_score = None
                 
@@ -204,6 +201,70 @@ def gtor_concat(cfg: 'config.Config', gen: int) -> 'codeling.Codeling':
                 child_ID = f"{child_gen}-{IDs.next_ID(child_gen):08x}"
                 child = cdl1.concat(cdl2, child_ID)
                 yield child
+
+
+def family(cfg: 'config.Config', scores: list, n_accept: int):
+    cdl_res = collections.namedtuple('cdl_res', 'cdl res')
+    cdls = {}
+    for json_fname, res in scores.items():
+        cdl = codeling.Codeling(cfg, json_fname=json_fname)
+        cdls[cdl.json['ID']] = cdl_res(cdl, res)
+    
+    def earliest_ancestors(cdl_ID: str):
+        """earliest ancestor(s) still in cfg.outdir"""
+        if cdl_ID not in cdls:
+            return None
+        else:
+            parents = cdls[cdl_ID].cdl.json['parents']
+            eas = list(filter(None, map(earliest_ancestors, parents)))
+            return set.union(*eas) if eas else {cdl_ID}
+    
+    fams = {}
+    def family_ID(cdl_ID: str):
+        """temporary mapping until families are finalised"""
+        for fam_ID, fam in fams.items():
+            if cdl_ID in fam:
+                return fam_ID
+        
+        return None
+    
+    # figure out families
+    for cdl_ID in cdls:
+        eas = earliest_ancestors(cdl_ID)
+        fam_IDs = sorted(set(filter(None, map(family_ID, eas))))
+        
+        if not fam_IDs:
+            # start a new family
+            fam_ID = sorted(eas)[0]
+            fams[fam_ID] = eas | {cdl_ID}
+        else:
+            # merge everyone into one big family
+            fam_ID = fam_IDs.pop(0)
+            fams[fam_ID] |= eas | {cdl_ID}
+            for del_ID in fam_IDs:
+                fams[fam_ID] |= fams[del_ID]
+                del(fams[del_ID])
+    
+    print()
+    IDlen = 20
+    for fam_ID in sorted(fams):
+        print(f"Family of {fam_ID}:")
+        fam = sorted(fams[fam_ID],
+                     key = lambda cID: (-cdls[cID].res.score, cID))
+        n_accepted = 0
+        for cdl_ID in fam:
+            r = cdls[cdl_ID].res
+            if n_accepted < n_accept:
+                n_accepted += 1
+                status = 'accept'
+                cdls[cdl_ID].cdl.link_json_wasm(cfg.outdir)
+            else:
+                status = 'reject'
+            
+            print(f"{cdl_ID:{IDlen}}", f"{r.score:>7x}", f"{status:>7}",
+                  r.desc, sep="\t")
+        
+        print()
 
 
 def history(cfg: 'config.Config', json_fnames: list):
@@ -419,8 +480,6 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     
     cmds = parser.add_mutually_exclusive_group(required=True)
-    cmds.add_argument('-score', action='store_true',
-        help=f"""Score all codelings in '{cfg.indir}'.""")
     cmds.add_argument('-rnd0', type=type_int_ish, metavar='N',
         help="""Generate N new random generation 0 codelings that are 
         completely random strings of bytes. Most codelings generated in this 
@@ -437,6 +496,19 @@ def main():
         help=f"""For all codelings X and Y in '{cfg.indir}' such that at least 
         one is of generation 'gen' (eg '0' or '0x00'), create a new codeling 
         X+Y by concatenating their codes. XXX TODO: FIX, CURRENTLY BROKEN""")
+    cmds.add_argument('-score', action='store_true',
+        help=f"""Score all codelings in '{cfg.indir}'.""")
+    cmds.add_argument('-family', type=type_int_ish, metavar='N',
+        help=f"""The codelings in '{cfg.indir}' are grouped into families. Two 
+        codelings in '{cfg.indir}' are in the same family when one is a parent 
+        of the other. Family membership is transitive, i.e. if codelings A and 
+        B are in the same family and codelings B and C are in the same family, 
+        then provided that all three codelings are in '{cfg.indir}', all three 
+        are in the same family. N highest-scoring codelings in each family are 
+        saved to '{cfg.outdir}'. If two or more codelings in the same family 
+        have equal scores, they are sorted alphabetically by their identifiers 
+        and whichever comes first ('a' before 'b', '1' before '2' etc) is 
+        saved first.""")
     cmds.add_argument('-history', type=type_json, metavar='json', nargs='+',
         help=f"""Print the history of a particular codeling stored in the 
         'json' file (NB must end in '.json') by recursively looking up its 
@@ -513,44 +585,36 @@ def main():
     parser.add_argument('runid', type=str, nargs='?',
         help=f"""Identifier for this run (e.g. 'run01'). All new codelings 
         produced during the run will have identifiers of the form 
-        'runid-012345678901', i.e. the run identifier followed by a dash and 
-        twelve digits (with most of the leading ones being zero). The run 
-        identifier is a required argument for all types of runs except 
-        '-score' (where no new codelings are produced).""")
+        'runid-123456789012', i.e. the run identifier followed by a dash and 
+        twelve digits (with most of the leading digits being zero). The run 
+        identifier is required for all runs where new codelings are produced 
+        (i.e. '-rnd0', '-gen0', '-mutate' and '-concat').""")
     
     args = parser.parse_args()
     
     new_cdls = (args.rnd0, args.gen0, args.mutate, args.concat)
-    if any(a is not None for a in new_cdls) and args.runid is None:
-        parser.error("'runid' is required for all runs except '-score'")
+    if any(new_cdls) and args.runid is None:
+        parser.error("'runid' is required for all runs where new codelings "
+                     "are produced, i.e. '-rnd0', '-gen0', '-mutate' and "
+                     "'-concat'")
     
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    if args.diff and args.score:
-        parser.error("'-diff' cannot be used with '-score'")
+    if args.diff and any((args.score, args.family, args.history)):
+        parser.error("'-diff' cannot be used with '-score', '-family' or "
+                     "'-history'")
     
-    keep_params = ('fuel scfn mtfn thresh diff keep_all '
-                   'indir outdir nproc runid format')
-    for param in keep_params.split():
+    for param in ('length fuel scfn mtfn diff thresh keep_all '
+                  'indir outdir nproc format runid').split():
         val = getattr(args, param)
         if val is not None or param == 'runid':
             setattr(cfg, param, val)
-    
-    if args.score:
-        cfg.runid = None
-        cfg.keep_all = True     # if no new codelings, keep all by default
     
     if args.upto:
         Ls = range(1, cfg.length + 1)
     else:
         Ls = (cfg.length,)
-    
-    if args.history:
-        history(cfg, args.history)
-        return
-    elif args.rnd0 is not None:
-        sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
     
     with open(cfg.template_file, "rb") as f:
         cfg.template = f.read()
@@ -558,23 +622,39 @@ def main():
     signal.signal(signal.SIGINT, SIGINT_handler)
     
     print('#', ' '.join(sys.argv))
-    print('#')
     
-    if cfg.diff:
+    if args.history:
+        history(cfg, args.history)
+        return
+    elif args.rnd0 is not None:
+        sys.exit("SORRY, -rnd0 not implemented yet (well, re-implemented) :-(")
+    elif args.score or args.family:
+        # no new codelings are generated
+        cfg.runid = None
+        cfg.keep_all = True
+    
+    print('#')
+    if args.family:
+        print(f"# Scoring all codelings in '{cfg.indir}'")
+        cfg.baseline_run = True
+        baseline_results = score_Codelings(cfg, stop_check(gtor_score(cfg)))
+        family(cfg, baseline_results, args.family)
+        return
+    elif cfg.diff:
         print(f"# Baseline scores for all codelings in '{cfg.indir}'")
         cfg.baseline_run = True
-        baseline_scores = score_Codelings(cfg, stop_check(gtor_score(cfg)))
+        baseline_results = score_Codelings(cfg, stop_check(gtor_score(cfg)))
         print('#')
         print('# Main run')
     else:
-        baseline_scores = None
+        baseline_results = None
     
     if args.score:
         gtor = gtor_score(cfg)
     elif args.gen0 is not None:
         gtor = gtor_gen0(cfg, Ls, args.gen0)
     elif args.mutate is not None:
-        gtor = gtor_mutate(cfg, Ls, args.mutate, baseline_scores)
+        gtor = gtor_mutate(cfg, Ls, args.mutate, baseline_results)
     elif args.concat is not None:
         gtor = gtor_concat(cfg, args.concat)
     else:
