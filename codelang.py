@@ -1017,43 +1017,59 @@ class Function:
         
         Each entry is:
         
-            (instr, blk, parent_blk, is_else_blk)
+            (instr, blk, parent_blk)
         
-        where the following is true in most cases (when is_else_blk is False):
-        
-            instr = blk.content[instr.blk_i]
-            blk = parent_blk.content[parent_i.blk_i]
-        
-        however for `else` blocks the is_else_blk flag is set to True and:
+        where the following is always true:
         
             instr = blk.content[instr.blk_i]
-            blk = parent_blk.content[parent_i.blk_i].else_blk
+        
+        and then depending on whether whether blk is an ElseBlock:
+            
+            blk = parent_blk.content[blk.blk_i].else_blk   # ElseBlocks
+            blk = parent_blk.content[blk.blk_i]            # all other cases
+        
+        and further when blk.is_L0 is True, parent_blk is None.
         
         The index starts with the initial `DummyFnStart` at index[0]
-        and ends with the terminal `end` (at the end of the function)
+        and ends with the terminal `end` (at the very end of the function)
         at index[self.length]
         
         The following is True for all index entries:
         
             index[j][0].fn_i == j-1
         
-        Remember to set self.index=None when no longer needed (eg just before 
-        mutating the function) so there are no hanging references impeding
-        the garbage collector
+        Remember to set self.index to None when no longer needed (eg just 
+        before actually mutating the function) so there are no hanging 
+        references impeding the garbage collector
         """
-        def add_block(blk, parent_blk=None, is_else_blk=False):
-            for i in range(len(blk.content)):
-                instr = blk.content[i]
+        def add_block(blk, parent_blk=None):
+            for instr in blk.content:
                 if isinstance(instr, CodeBlock):
                     add_block(instr, blk)
                 else:
-                    self.index.append((instr, blk, parent_blk, is_else_blk))
+                    self.index.append((instr, blk, parent_blk))
             
             if type(blk) is IfBlock and blk.else_blk is not None:
-                add_block(blk.else_blk, parent_blk, True)
+                add_block(blk.else_blk, parent_blk)
         
         self.index = []
         add_block(self.L0_blk)
+    
+    def check_index(self):
+        """sanity check for self.index"""
+        for instr, blk, parent_blk in self.index:
+            assert instr == blk.content[instr.blk_i]
+            if blk.is_L0:
+                assert parent_blk is None
+            else:
+                if type(blk) is ElseBlock:
+                    assert blk == blk.if_blk.else_blk
+                    assert blk == parent_blk.content[blk.blk_i].else_blk
+                else:
+                    assert blk == parent_blk.content[blk.blk_i]
+        
+        for j in range(len(self.index)):
+            assert self.index[j][0].fn_i == j-1
     
     def random_region(self, length: int):
         """Find a random region of at least `length` instructions
@@ -1061,31 +1077,31 @@ class Function:
         
         The region does *not* need to be stack-neutral (pop-push != 0) 
         
-        Returns (block, start, end) where the region consists of instructions
-        block.content[start] through to block.content[end-1]
+        Returns (blk, start, end) where the region consists of instructions
+        blk.content[start] through to blk.content[end-1]
         
-        Returns None if there is no such region
+        Returns (None, None, None) if there is no such region
         
         The initial dummy `DummyFnStart` and the terminal `end` instruction
-        at the end of the function are never part of the region
+        at the very end of the function are never part of the region
         """
         for L in range(length, self.length):
             # [self.length] is the terminal `end` at the end of the function
             # we want the last start to be L before that
             # +1 because range(3) is (0, 1, 2)
-            starts = [i for i in range(1, self.length-L+1)]
+            starts = list(range(1, self.length-L+1))
             random.shuffle(starts)
             
             for start in starts:
-                s, s_blk, sp_blk, _ = self.index[start]         # s = start
-                e, e_blk, ep_blk, _ = self.index[start+L-1]     # e = end
+                s, s_blk, s_pblk = self.index[start]        # s = start
+                e, e_blk, e_pblk = self.index[start+L-1]    # e = end
                 
                 # too complicated for how rare it is, skipped
                 if type(s) is ElseInstr:
                     continue
                 
-                if type(s) is BlockInstr: s, s_blk = s_blk, sp_blk
-                if type(e) is EndInstr: e, e_blk = e_blk, ep_blk
+                if type(s) is BlockInstr: s, s_blk = s_blk, s_pblk
+                if type(e) is EndInstr: e, e_blk = e_blk, e_pblk
                 
                 if s_blk != e_blk:
                     continue
@@ -1094,46 +1110,129 @@ class Function:
         
         return (None, None, None)
     
-    def random_stack_neutral_region(self, length: int):
+    def gtor_random_stack_neutral_region(self,
+                                         length_min: int,
+                                         length_max: int = None,
+                                         i_start: int = None,
+                                         i_end: int = None):
         """Find a random stack-neutral (pop-push = 0) region of at least 
-        `length` instructions consisting of non-block instructions and whole 
-        blocks
+        `length_min` instructions consisting of non-block instructions and 
+        whole blocks
         
-        Returns (block, start, end) where the region consists of instructions
-        block.content[start] through to block.content[end-1]
+        Optionally can also specify `length_max` as the maximum number of 
+        instructions, and `i_start` and `i_end` as the subregion to which 
+        the search is restricted
         
-        Returns None if there is no such region
+        Yields (blk, start, end) where the stack-neutral region found 
+        consists of instructions blk.content[start] through to 
+        blk.content[end-1] and where i_start <= start and end <= i_end
         
-        The initial dummy `DummyFnStart` and the terminal `end` instruction 
-        at the end of the function are never part of the region
+        With default settings (i_start = 1, i_end = self.length), the initial 
+        dummy `DummyFnStart` at self.index[0] (which is not counted as part of 
+        self.length) and the terminal `end` instruction at the very end of the 
+        function at self.index[self.length] will never be part of the region
         """
-        for L in range(length, self.length):
-            # [self.length] is the terminal `end` at the end of the function
-            # we want the last start to be L before that
+        if length_max is None: length_max = self.length - 1
+        if i_start is None: i_start = 1
+        if i_end is None: i_end = self.length
+        assert i_start <= i_end
+        
+        for L in range(length_min, length_max+1):
+            # [i_end-1] is the last instruction to include in the region
+            # we want the last start to be L-1 before that
             # +1 because range(3) is (0, 1, 2)
-            starts = [i for i in range(1, self.length-L+1)]
+            starts = list(range(i_start, i_end-L+1))
             random.shuffle(starts)
-            
             for start in starts:
-                p, p_blk, pp_blk, _ = self.index[start-1]       # p = previous
-                s, s_blk, sp_blk, _ = self.index[start]         # s = start
-                e, e_blk, ep_blk, _ = self.index[start+L-1]     # e = end
+                p, p_blk, p_pblk = self.index[start-1]      # p = previous
+                s, s_blk, s_pblk = self.index[start]        # s = start
+                e, e_blk, e_pblk = self.index[start+L-1]    # e = end
                 
                 # too complicated for how rare it is, skipped
                 if type(s) is ElseInstr:
                     continue
                 
-                if type(p) is EndInstr: p, p_blk = p_blk, pp_blk
-                if type(s) is BlockInstr: s, s_blk = s_blk, sp_blk
-                if type(e) is EndInstr: e, e_blk = e_blk, ep_blk
+                if type(p) is EndInstr: p, p_blk = p_blk, p_pblk
+                if type(s) is BlockInstr: s, s_blk = s_blk, s_pblk
+                if type(e) is EndInstr: e, e_blk = e_blk, e_pblk
                 
                 assert p_blk == s_blk
                 if s_blk != e_blk or p.stack_after != e.stack_after:
                     continue
                 
-                return (s_blk, s.blk_i, e.blk_i+1)
+                yield (s_blk, s.blk_i, e.blk_i+1)
+    
+    def random_stack_neutral_region(self, length):
+        gtor = self.gtor_random_stack_neutral_region(length)
+        try:
+            out = next(gtor)
+        except StopIteration:
+            return (None, None, None)
         
-        return (None, None, None)
+        return out
+    
+    def random_stack_neutral_Uregion(self, length):
+        """Find a random stack-neutral (pop-push = 0) U-region of at least 
+        `length` instructions consisting of non-block instructions and whole 
+        blocks, where a 'U-region' is defined as two segments of code within 
+        the same block separated by at least one instruction and/or sub-block 
+        that is not part of the U-region. The two segments of the U-region 
+        taken together are stack-neutral.
+        
+        Returns (blk, start1, end1, start2, end2) where the stack-neutral 
+        U-region consists of instructions blk.content[start1:end1] and 
+        blk.content[start2:end2] (NB [0:3] = [0, 1, 2])
+                
+        Returns (None, None, None, None, None) when there is no such region
+        
+        The initial dummy `DummyFnStart` at self.index[0] (which is not 
+        counted as part of self.length) and the terminal `end` instruction at 
+        the very end of the function at self.index[self.length] will never be 
+        part of the U-region
+        """
+        # one instruction, skipped region, one instruction = two instructions
+        if length < 2: length = 2 
+        
+        #               .-- exclude the `end` at the very end of the function
+        #               |   .-- at least one instruction in skipped region
+        #               |   |   .-- range(3) = (0, 1, 2)
+        # self.length - 1 - 1 + 1
+        for L_main in range(length, self.length-1):
+            
+            #               .-- exclude the terminal `end` at end of function
+            #               |      .-- already covered by L_main
+            #               |      |     .-- range(3) = (0, 1, 2)
+            # self.length - 1 + L_main + 1
+            L_skips = list(range(1, self.length - L_main))
+            random.shuffle(L_skips)
+            for L_skip in L_skips:
+                L = L_main + L_skip
+                gtor_main = self.gtor_random_stack_neutral_region(L, L)
+                for blk, start, end in gtor_main:
+                    # [start] is the first instruction in the main region
+                    # [end-1] is the last instruction in the main region
+                    # but fn_i for a block is the fn_i of its last instruction
+                    # so [start] --> [start-1]+1 to get the first one
+                    si = blk.content[start-1].fn_i + 1
+                    ei = blk.content[end-1].fn_i
+                    
+                    tot_length = ei - si + 1
+                    assert tot_length == L_main + L_skip
+                    
+                    # want [si+1] ... [ei-1]
+                    # +1 to map fn_i --> self.index[i]
+                    # +1 for i_end because range(3) = (0, 1, 2)
+                    i_start = si + 2
+                    i_end = ei + 1
+                    assert i_start <= i_end
+                    
+                    p = (L_skip, L_skip, i_start, i_end)
+                    gtor_skip = self.gtor_random_stack_neutral_region(*p)
+                    for skip_blk, skip_start, skip_end in gtor_skip:
+                        if skip_blk == blk:
+                            return (blk, start, skip_start, skip_end, end)
+        
+        return (None, None, None, None, None)
     
     def random_reachable_instr(self):
         """Find a random reachable instruction
@@ -1155,7 +1254,7 @@ class Function:
                          i[0].blk_i <= i[1].any_OK_after)]
         
         del(reachable[-1])  # get rid of the final `end`
-        instr, blk, parent_blk, _ = random.choice(reachable)
+        instr, blk, parent_blk = random.choice(reachable)
         if type(instr) is EndInstr:
             instr, blk = blk, parent_blk
         
@@ -1232,7 +1331,7 @@ class Function:
         
         return False
     
-    def mutator_del_block(self, length: int) -> bool:
+    def mutator_del_blk(self, length: int) -> bool:
         """Delete a single block instruction (`block`, `loop` or `if`) and its 
         corresponding `end`. Instructions inside the block are retained and 
         simply moved down a level. For `if` blocks (which have pop=1),
@@ -1252,7 +1351,7 @@ class Function:
             return type(i) is BlockInstr
         
         try:
-            instr, blk, parent_blk, _ = self.random_instr_filter(filter_blk)
+            instr, blk, parent_blk = self.random_instr_filter(filter_blk)
         except IndexError:
             return False
         
@@ -1274,11 +1373,11 @@ class Function:
                             blk.content[-1].fn_i + 2 - skip_end]
         
         blk.del_level(level)
-        for bl_instr, bl_blk, _, _ in instrs:
+        for bl_instr, bl_blk, _ in instrs:
             if type(bl_instr) is not BlockInstr: continue
             bl_blk.del_level(level)
         
-        for br_instr, br_blk, _, _ in instrs:
+        for br_instr, br_blk, _ in instrs:
             if type(br_instr) is not BranchInstr:
                 continue
             
@@ -1385,7 +1484,7 @@ class Function:
         """
         if blk is None or start is None or end is None:
             if length is None:
-                raise RuntimeError("Need either length or blk, start, end!")
+                raise RuntimeError("Need either length or (blk, start, end)!")
             
             blk, start, end = self.random_stack_neutral_region(length)
         
@@ -1396,7 +1495,30 @@ class Function:
         # (too complicated to handle correctly for how rare they are)
         del(blk.content[start:end])
         
-        # heads up: self.length is now wrong, but no longer needed
+        # heads up: self.length is now wrong (but no longer needed)
+        return True
+    
+    def mutator_delU(self, length) -> bool:
+        """Delete several non-block instructions and/or whole blocks, but do 
+        not add any new ones. The deleted code forms two segments within the 
+        same block separated by at least one instruction and/or block that is 
+        retained. Taken together the two deleted segments are stack-neutral 
+        (pop-push = 0).
+        
+        At least `length` instructions are deleted.
+        """
+        blk, s1, e1, s2, e2 = self.random_stack_neutral_Uregion(length)
+        
+        if blk is None:
+            return False
+        
+        # this boldly ignores a few errors due to CodeBlock.any_OK_after
+        # (too complicated to handle correctly for how rare they are)
+        # as well as stack size dropping below zero in [e2:s1]
+        del(blk.content[s2:e2])
+        del(blk.content[s1:e1])
+        
+        # heads up: self.length is now wrong (but no longer needed)
         return True
     
     def mutator_ins(self, length: int,
@@ -1542,6 +1664,6 @@ class Function:
         self.build_index()
         mutator_fn = getattr(self, 'mutator_' + method)
         retval = mutator_fn(length)
-        self.index=None
+        self.index = None
         
         return retval
