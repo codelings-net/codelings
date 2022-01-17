@@ -250,11 +250,13 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
         fam = sorted(fams[fam_ID],
                      key = lambda cID: (-cdls[cID].res.score, cID))
         n_accepted = 0
+        accept_score = None
         for cdl_ID in fam:
             r = cdls[cdl_ID].res
-            if n_accepted < n_accept:
+            if n_accepted < n_accept or r.score == accept_score:
                 n_accepted += 1
                 status = 'accept'
+                accept_score = r.score
                 cdls[cdl_ID].cdl.link_json_wasm(cfg.outdir)
             else:
                 status = 'reject'
@@ -534,9 +536,10 @@ def main():
         B are in the same family and codelings B and C are in the same family, 
         then provided that all three codelings are in '{cfg.indir}', all three 
         are in the same family. N highest-scoring codelings in each family are 
-        saved to '{cfg.outdir}'. If two or more codelings in the same family 
-        have equal scores, they are sorted by their identifiers and whichever 
-        comes first alphabetically is the first to be saved.""")
+        saved (i.e. hard linked) to '{cfg.outdir}'. If two or more codelings 
+        in the same family have equal scores, they are either all saved (and 
+        the total number saved may exceed N for this reason) or none are 
+        saved.""")
     cmds.add_argument('-dump', type=str, metavar='cdl', nargs='+', 
         help=f"""Print out a codeling (or several codelings) including its 
         parsed code. The parameter 'cdl' can be one of the following: a 
