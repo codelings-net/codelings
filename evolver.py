@@ -636,9 +636,8 @@ def main():
     if args.runid is not None and re.match(r'^#', args.runid):
         parser.error("'runid' cannot start with '#'")
     
-    if args.diff and any((args.score, args.family, args.dump, args.history)):
-        parser.error("'-diff' cannot be used with '-score', '-family', "
-                     "'-dump' or '-history'")
+    if args.diff and not any((args.mutate, args.concat)):
+        parser.error("'-diff' can only be used with '-mutate' and '-concat'")
     
     for param in ('length fuel scfn mtfn diff thresh keep_all '
                   'indir outdir nproc format runid').split():
