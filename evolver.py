@@ -536,10 +536,9 @@ def main():
         B are in the same family and codelings B and C are in the same family, 
         then provided that all three codelings are in '{cfg.indir}', all three 
         are in the same family. N highest-scoring codelings in each family are 
-        saved (i.e. hard linked) to '{cfg.outdir}'. If two or more codelings 
-        in the same family have equal scores, they are either all saved (and 
-        the total number saved may exceed N for this reason) or none are 
-        saved.""")
+        saved to '{cfg.outdir}'. If two or more codelings in the same family 
+        have equal scores, they are either all saved (and the total number 
+        saved may exceed N for this reason) or none are saved.""")
     cmds.add_argument('-dump', type=str, metavar='cdl', nargs='+', 
         help=f"""Print out a codeling (or several codelings) including its 
         parsed code. The parameter 'cdl' can be one of the following: a 
