@@ -118,7 +118,7 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
             if n_scored % 100_000 == 0:
                 if n_scored == 100_000:
                     print(f"{'time':23}",
-                          *[f"{s:>15}" for s in ('n_scored/1e6',
+                          *[f"{s:>15}" for s in ('n_scored/1e5',
                                                  'n_accepted',
                                                  'scored/hour')],
                           sep="\t", file=sys.stderr)
@@ -127,7 +127,7 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
                 thrpt = (n_scored - n_scored_prev) / (t_now - t_prev) * 3600
                 n_scored_prev, t_prev = n_scored, t_now
                 print(util.nice_now(),
-                      *[f"{i:>15d}" for i in (round(n_scored / 1e6),
+                      *[f"{i:>15d}" for i in (round(n_scored / 1e5),
                                               n_accepted)],
                       f"{thrpt:>15.2e}",
                       sep="\t", file=sys.stderr)
