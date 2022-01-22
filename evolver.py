@@ -250,13 +250,11 @@ def family(cfg: 'config.Config', scores: list, n_accept: int):
         fam = sorted(fams[fam_ID],
                      key = lambda cID: (-cdls[cID].res.score, cID))
         n_accepted = 0
-        accept_score = None
         for cdl_ID in fam:
             r = cdls[cdl_ID].res
-            if n_accepted < n_accept or r.score == accept_score:
+            if n_accepted < n_accept:
                 n_accepted += 1
                 status = 'accept'
-                accept_score = r.score
                 cdls[cdl_ID].cdl.link_json_wasm(cfg.outdir)
             else:
                 status = 'reject'
@@ -345,11 +343,19 @@ def history(cfg: 'config.Config', json_or_IDs: list):
 
 
 def LEB128_test():
-    for i32 in (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
-                0x7ffffff, 0x8000000,
-                0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
-                0xffffffbf, 0xffffffc0, 0xffffffff):
-        
+    old = (0x00, 0x3f, 0x40, 0x7f, 0x80, 0xbf, 0xc0, 0x1fff, 0x2000,
+           0x7ffffff, 0x8000000,
+           0x7fffffff, 0x80000000, 0xf7ffffff, 0xf8000000,
+           0xffffffbf, 0xffffffc0, 0xffffffff)
+    
+    # generated via:
+    # bits = random.sample(list(range(1,32)), 16)
+    # list(map(hex,sorted((random.getrandbits(i) for i in bits))))
+    new = (0x0, 0x2, 0x19, 0xc7, 0x1f4, 0xbab, 0x1c39, 0x20ed, 
+           0x13d2e, 0x16e9b, 0x2b86e, 0x631c2, 
+           0x2dd1fb, 0x5b956a, 0x51c3180, 0xfd4d929)
+    
+    for i32 in new:
         b = util.LEB128(util.unsigned2signed(i32, 32))
         bs = util.ByteStream(b)
         parsed = util.signed2unsigned(bs.next_LEB128(), 32)
@@ -441,7 +447,7 @@ def main():
     defaults = (
         ('length', 5),
         ('fuel', 50),
-        ('scfn', 'LEB128_nolen'),
+        ('scfn', 'Lv2_nolen'),
         ('mtfn', 'ins'),
         ('thresh', None),
         ('nproc', multiprocessing.cpu_count()),
@@ -537,8 +543,8 @@ def main():
         then provided that all three codelings are in '{cfg.indir}', all three 
         are in the same family. N highest-scoring codelings in each family are 
         saved to '{cfg.outdir}'. If two or more codelings in the same family 
-        have equal scores, they are either all saved (and the total number 
-        saved may exceed N for this reason) or none are saved.""")
+        have equal scores, they are saved in alphabetical order of their IDs 
+        up to a total of N codelings per family.""")
     cmds.add_argument('-dump', type=str, metavar='cdl', nargs='+', 
         help=f"""Print out a codeling (or several codelings) including its 
         parsed code. The parameter 'cdl' can be one of the following: a 

@@ -488,6 +488,31 @@ class Codeling:
         total.desc = f"n={n} " + ' '.join(desc)
         return total
     
+    def _score_LEB128_v02(self, lenpen: int) -> 'SimpleNamespace':
+        total = sns(ID=self.json['ID'], score=0, desc='', fuel=0, t_run=0)
+        desc = []
+        outs = set()
+        
+        # generated via:
+        # bits = random.sample(list(range(1,32)), 16)
+        # list(map(hex,sorted((random.getrandbits(i) for i in bits))))
+        vals = (0x0, 0x2, 0x19, 0xc7, 0x1f4, 0xbab, 0x1c39, 0x20ed, 
+                0x13d2e, 0x16e9b, 0x2b86e, 0x631c2, 
+                0x2dd1fb, 0x5b956a, 0x51c3180, 0xfd4d929)
+        
+        for val in vals:
+            retval = self._score_LEB128_val(val, lenpen)
+            total.score += retval.score
+            total.fuel = retval.fuel
+            total.t_run += retval.t_run
+            desc.append(retval.desc)
+            outs.add(retval.out.hex())
+        
+        n = len(outs)
+        total.score += 0x100 * (n-1)
+        total.desc = f"n={n} " + ' '.join(desc)
+        return total
+    
     def score_LEB128(self) -> 'SimpleNamespace':
         """Penalties: -0x01 for every byte of code length, -0x08 for every 
         wrong byte written to 'out' (or missing when it should have been 
@@ -505,8 +530,15 @@ class Codeling:
     
     def score_LEB128_nolen(self) -> 'SimpleNamespace':
         """Same as LEB128 except no penalty for code length"""
-        
         return self._score_LEB128(lenpen=0)
+    
+    def score_Lv2(self) -> 'SimpleNamespace':
+        """Same as LEB128 except different test values"""
+        return self._score_LEB128_v02(lenpen=1)
+    
+    def score_Lv2_nolen(self) -> 'SimpleNamespace':
+        """Same as LEB128_nolen except different test values"""
+        return self._score_LEB128_v02(lenpen=0)
     
     def score(self) -> 'SimpleNamespace':
         # generation
