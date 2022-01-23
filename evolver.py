@@ -32,11 +32,18 @@ def SIGINT_handler(sig, frame):
     STOPPING = True
 
 
+def stderr(*args, **kwargs):
+    # without try/except the script dies when no access to stderr
+    try:
+        print(*args, **kwargs, file=sys.stderr)
+    except OSError:
+        pass
+
+
 def stop_check(cdl_gtor) -> 'codeling.Codeling':
     for cdl in cdl_gtor:
         if STOPPING:
-            print(' Caught SIGINT, stopping. Waiting for jobs to finish.',
-                  file=sys.stderr)
+            stderr(' Caught SIGINT, stopping. Waiting for jobs to finish.')
             break
         else:
             yield cdl
@@ -117,20 +124,20 @@ def score_Codelings(cfg: 'config.Config', cdl_gtor):
             
             if n_scored % 100_000 == 0:
                 if n_scored == 100_000:
-                    print(f"{'time':23}",
-                          *[f"{s:>15}" for s in ('n_scored/1e5',
-                                                 'n_accepted',
-                                                 'scored/hour')],
-                          sep="\t", file=sys.stderr)
+                    stderr(f"{'time':23}",
+                           *[f"{s:>15}" for s in ('n_scored/1e5',
+                                                  'n_accepted',
+                                                  'scored/hour')],
+                           sep="\t")
                 
                 t_now = time.time()
                 thrpt = (n_scored - n_scored_prev) / (t_now - t_prev) * 3600
                 n_scored_prev, t_prev = n_scored, t_now
-                print(util.nice_now(),
-                      *[f"{i:>15d}" for i in (round(n_scored / 1e5),
-                                              n_accepted)],
-                      f"{thrpt:>15.2e}",
-                      sep="\t", file=sys.stderr)
+                stderr(util.nice_now(),
+                       *[f"{i:>15d}" for i in (round(n_scored / 1e5),
+                                               n_accepted)],
+                       f"{thrpt:>15.2e}",
+                       sep="\t")
     
     print('# Scoring finished:', util.nice_now())
     print(f"# Scoring throughput: {n_scored/(time.time()-t_start)*3600:.2e} "
