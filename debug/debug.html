@@ -1,40 +1,52 @@
 <!DOCTYPE html> 
 <html>
 <head>
-	<meta charset="utf-8"> 
-	<title>WebAssembly Debugger</title> 
+    <meta charset="utf-8"> 
+    <title>WebAssembly Debugger</title> 
 </head> 
 <body>
 <script>
-	function i32_hex (i) {
-		return i.toString(16).padStart(8, '0').match(/../g).reverse().join('');
-	}
-	
-	function buf_hex (buf, start, len) {
-		var i32a = new Uint32Array( buf.slice(start, start+len) );
-		return Array.from(i32a).map( i32 => i32_hex(i32) ).join(' ');
-	}
-	
-	function dump (mem) {
-		var buf = mem.buffer;
-		var dv = new DataView(buf);
-		// var rnd = dv.getUint32(0x00, true);
-		// var tmp = dv.getUint32(0x04, true);
-		// var inp = dv.getUint32(0x08, true);
-		var out = dv.getUint32(0x0c, true);
-		
-		return [ 
-			'#__: 00~1~2~3 04~5~6~7 08~9~a~b 0c~d~e~f ' +
-				 '10~1~2~3 14~5~6~7 18~9~a~b 1c~d~e~f',
-			'hdr: ' + buf_hex(buf, 0, 0x20),
-			'out: ' + buf_hex(buf, out, 0x20) ];
-	}
-	
-	fetch("debug.wasm")
-		.then(bytes => bytes.arrayBuffer()) 
-		.then(mod => WebAssembly.compile(mod)) 
-		.then(module => { return new WebAssembly.Instance(module) }) 
-		.then(instance => instance.exports.f());
+    function i32_hex (i) {
+        return i.toString(16).padStart(8, '0').match(/../g).reverse().join('');
+    }
+    
+    function buf_hex (buf, start, len) {
+        var i32a = new Uint32Array(buf.slice(start, start+len));
+        return Array.from(i32a).map(i32 => i32_hex(i32)).join(' ');
+    }
+    
+    function dump (mem) {
+        var buf = mem.buffer;
+        var dv = new DataView(buf);
+        // var rnd = dv.getUint32(0x00, true);
+        // var tmp = dv.getUint32(0x04, true);
+        var inp = dv.getUint32(0x08, true);
+        var out = dv.getUint32(0x0c, true);
+        
+        return [
+            '#__: 00~1~2~3 04~5~6~7 08~9~a~b 0c~d~e~f ' +
+                 '10~1~2~3 14~5~6~7 18~9~a~b 1c~d~e~f',
+            'hdr: ' + buf_hex(buf, 0, 0x20),
+            'inp: ' + buf_hex(buf, inp, 0x20),
+            'out: ' + buf_hex(buf, out, 0x20) ];
+    }
+    
+    function set_inp (mem, val) {
+        var dv = new DataView(mem.buffer);
+        var inp = dv.getUint32(0x08, true);
+        dv.setUint32(inp, val, true);
+    }
+    
+    function run(instance) {
+        set_inp(instance.exports.m, 0x1f4);
+        instance.exports.f();
+    }
+    
+    fetch("debug.wasm")
+        .then(bytes => bytes.arrayBuffer()) 
+        .then(mod => WebAssembly.compile(mod)) 
+        .then(module => { return new WebAssembly.Instance(module) })
+        .then(instance => run(instance));
 </script>
 
 If you need help, have a look at <b>README.md</b> in this directory.
