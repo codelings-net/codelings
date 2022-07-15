@@ -8,7 +8,7 @@ class Instr:
     """A single instruction within a WebAssembly (or CodeLang) program
     
     Used directly for simple instructions without an immediate and as a base 
-    class for more complicated instructions
+    class for more complex instructions
     
     Instruction objects are initialised in two steps:
     
@@ -46,14 +46,14 @@ class Instr:
         if f.cur_blk.any_OK_after is None:
             return False
         
-        blk_i = f.last_instr.blk_i + 1 if self.blk_i is None else self.blk_i
+        blk_i = self.blk_i
+        if blk_i is None: blk_i = f.last_instr.blk_i + 1
         return f.cur_blk.any_OK_after < blk_i
     
     def _append_OK(self, f: 'Function') -> bool:
         if f.wind_down:
             targ = f.cur_blk.temp_targ
-            if targ is None:
-                targ = f.cur_blk.targ
+            if targ is None: targ = f.cur_blk.targ
             
             diff = f.last_instr.stack_after - targ
             if abs(diff) < abs(diff - self.pop + self.push):
